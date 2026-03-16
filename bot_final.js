@@ -1,102 +1,77 @@
-const ccxt = require('ccxt');
 require('dotenv').config();
+const ccxt = require('ccxt');
+const { Telegraf } = require('telegraf');
 const { RSI } = require('technicalindicators');
 
-// CONFIGURACIÓN DE EXPERTO - MODO AGRESIVO
-const SYMBOL = 'SOL/USDT';
-const TIMEFRAME = '1m';
-const LEVERAGE = 5;
-const RISK_PCT = 0.90;       // 90% del saldo para alcanzar el mínimo de Binance
-const STOP_LOSS_PCT = 0.02;  // 2% de pérdida máxima (10% con el apalancamiento)
-const TAKE_PROFIT_PCT = 0.04; // 4% de ganancia (20% con el apalancamiento)
+// --- CONFIGURACIÓN ---
+const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
+const chatId = process.env.TELEGRAM_CHAT_ID;
+let botActivo = true; // Interruptor del bot
 
-async function runSuperBot() {
-    const exchange = new ccxt.binance({
-        apiKey: process.env.BINANCE_API_KEY,
-        secret: process.env.BINANCE_SECRET_KEY,
-        options: { 'defaultType': 'future' }
-    });
+const exchange = new ccxt.binance({
+    apiKey: process.env.API_KEY, 
+    secret: process.env.SECRET_KEY,
+    options: { defaultType: 'future' }
+});
 
-    console.log(`\n🛡️  BOT AGRESIVO INICIADO`);
-    console.log(`📍 Monitoreando: ${SYMBOL} | ⏳ Intervalo: ${TIMEFRAME} | ⚡ Palanca: ${LEVERAGE}x\n`);
-
-    while (true) {
-        try {
-            // 1. Configurar Apalancamiento
-            await exchange.setLeverage(LEVERAGE, SYMBOL);
-
-            // 2. Obtener Datos y Calcular RSI
-            const ohlcv = await exchange.fetchOHLCV(SYMBOL, TIMEFRAME, undefined, 100);
-            const prices = ohlcv.map(c => c[4]);
-            const currentPrice = prices[prices.length - 1];
-
-            const rsiValues = RSI.calculate({ values: prices, period: 14 });
-            const lastRSI = rsiValues[rsiValues.length - 1];
-
-            console.log(`[${new Date().toLocaleTimeString()}] PRECIO: ${currentPrice} | RSI: ${lastRSI.toFixed(2)}`);
-
-            // 3. Revisar si ya hay una posición abierta
-            const positions = await exchange.fetchPositions([SYMBOL]);
-            const hasPosition = positions.some(p => parseFloat(p.contracts) !== 0);
-
-            if (!hasPosition) {
-                // LÓGICA DE ENTRADA AGRESIVA
-                if (lastRSI < 45) {
-                    console.log("🟢 SEÑAL DE COMPRA (RSI < 45). Ejecutando LONG...");
-                    await executeTrade(exchange, 'buy', currentPrice);
-                } 
-                else if (lastRSI > 55) {
-                    console.log("🔴 SEÑAL DE VENTA (RSI > 55). Ejecutando SHORT...");
-                    await executeTrade(exchange, 'sell', currentPrice);
-                }
-            } else {
-                console.log("⏳ Posición abierta detectada. Esperando cierre...");
-            }
-
-            // Esperar 30 segundos para la próxima lectura
-            await new Promise(resolve => setTimeout(resolve, 30000));
-
-        } catch (e) {
-            console.error("❌ Error en el ciclo:", e.message);
-            await new Promise(resolve => setTimeout(resolve, 5000));
-        }
-    }
+// --- FUNCIONES DE TELEGRAM ---
+async function avisar(msg) {
+    try {
+        await bot.telegram.sendMessage(chatId, `🤖 *FastCL Alpha Bot:*\n${msg}`, { parse_mode: 'Markdown' });
+    } catch (e) { console.error("Error Telegram:", e); }
 }
 
-async function executeTrade(exchange, side, price) {
+// Comando Status: Te dice cómo va todo
+bot.command('status', async (ctx) => {
     try {
         const balance = await exchange.fetchBalance();
-        const freeUSDT = balance.total.USDT;
+        const ticker = await exchange.fetchTicker('SOL/USDT');
+        const saldo = balance.total['USDT'].toFixed(2);
+        ctx.replyWithMarkdown(`📊 *ESTADO ACTUAL*\n\n💰 *Saldo:* ${saldo} USDT\n🚀 *Precio SOL:* ${ticker.last} USDT\n⚙️ *Bot:* ${botActivo ? '🟢 Corriendo' : '🔴 Detenido'}`);
+    } catch (e) { ctx.reply("Error: " + e.message); }
+});
+
+// Comando Stop: El botón de pánico
+bot.command('stop', async (ctx) => {
+    botActivo = false;
+    await avisar("⚠️ *MODO PÁNICO ACTIVADO*\nCerrando todo y deteniendo operaciones...");
+    try {
+        await exchange.cancelAllOrders('SOL/USDT');
+        const positions = await exchange.fetchPositions(['SOL/USDT']);
+        const pos = positions.find(p => p.symbol === 'SOL/USDT');
         
-        // Cálculo de cantidad basado en riesgo y apalancamiento
-        const amountToUse = freeUSDT * RISK_PCT;
-        const quantity = (amountToUse * LEVERAGE) / price;
-        const formattedQty = exchange.amountToPrecision(SYMBOL, quantity);
+        if (pos && Math.abs(pos.contracts) > 0) {
+            const side = pos.side === 'long' ? 'sell' : 'buy';
+            await exchange.createMarketOrder('SOL/USDT', side, Math.abs(pos.contracts));
+            await avisar("✅ Posición cerrada. El bot no operará más.");
+        }
+    } catch (e) { await avisar(`❌ Error en stop: ${e.message}`); }
+});
 
-        // 1. Orden de Entrada (Mercado)
-        const order = await exchange.createMarketOrder(SYMBOL, side, formattedQty);
-        console.log(`✅ Orden ${side.toUpperCase()} abierta por ${formattedQty} SOL`);
+bot.launch();
 
-        // 2. Definir Precios de Salida
-        const slPrice = side === 'buy' ? price * (1 - STOP_LOSS_PCT) : price * (1 + STOP_LOSS_PCT);
-        const tpPrice = side === 'buy' ? price * (1 + TAKE_PROFIT_PCT) : price * (1 - TAKE_PROFIT_PCT);
+// --- LÓGICA DE TRADING ---
+async function tradingLoop() {
+    if (!botActivo) return;
 
-        // 3. Colocar Stop Loss y Take Profit en Binance
-        const reverseSide = side === 'buy' ? 'sell' : 'buy';
+    try {
+        // (Aquí va tu lógica de velas y RSI que ya funciona)
+        // Simulamos una entrada para mostrarte cómo avisar:
         
-        await exchange.createOrder(SYMBOL, 'STOP_MARKET', reverseSide, formattedQty, undefined, {
-            stopPrice: exchange.priceToPrecision(SYMBOL, slPrice)
-        });
-        
-        await exchange.createOrder(SYMBOL, 'TAKE_PROFIT_MARKET', reverseSide, formattedQty, undefined, {
-            stopPrice: exchange.priceToPrecision(SYMBOL, tpPrice)
-        });
+        /* Si el bot decide entrar:
+        await exchange.createOrder(...)
+        await avisar(`🚀 *ENTRADA EJECUTADA*\n💰 Precio: ${precio} USDT\n📉 Stop Loss: ${sl}\n📈 Take Profit: ${tp}`);
+        */
 
-        console.log(`🎯 Paracaídas listos -> SL: ${slPrice.toFixed(2)} | TP: ${tpPrice.toFixed(2)}`);
+        /* Si el bot detecta cierre de posición:
+        await avisar(`💰 *OPERACIÓN CERRADA*\n💸 PnL: +${ganancia} USDT\n🏦 Saldo final: ${nuevoSaldo} USDT`);
+        */
 
     } catch (error) {
-        console.error("⚠️ Fallo al ejecutar trade:", error.message);
+        console.error("Error en ciclo:", error);
     }
 }
 
-runSuperBot();
+// Ejecutar cada minuto
+setInterval(tradingLoop, 60000);
+console.log("🛡️ FastCL Alpha Bot iniciado en la nube...");
