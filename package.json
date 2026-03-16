@@ -1,4 +1,10 @@
 {
+  "name": "mi-trading-bot",
+  "version": "1.0.0",
+  "main": "bot_final.js",
+  "scripts": {
+    "start": "node bot_final.js"
+  },
   "dependencies": {
     "ccxt": "^4.5.43",
     "dotenv": "^17.3.1",
