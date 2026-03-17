@@ -38,8 +38,8 @@ async function setup() {
         await exchange.loadMarkets();
         await exchange.setLeverage(LEVERAGE, SYMBOL);
         await exchange.setMarginMode('ISOLATED', SYMBOL).catch(() => {}); // Intenta ponerlo en aislado
-        console.log(`🚀 FastCL iniciado: 10X en ${SYMBOL}`);
-        await avisar("🔥 *SISTEMA EN LINEA*\nConfiguración: 28/72 RSI\nObjetivo: +$1.2 / -$0.5");
+        console.log(`🚀 FastCL Ultra V3.1 - Optimizado para Interés Compuesto iniciado: 10X en ${SYMBOL}`);
+        await avisar("🔥 *SISTEMA EN LINEA V3.1 - Optimizado para Interés Compuesto*\nConfiguración: 28/72 RSI\nObjetivo: +$1.2 / -$0.5");
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
