@@ -7,15 +7,19 @@ const http = require('http');
 // --- SERVIDOR PARA RAILWAY (KEEP-ALIVE) ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('FastCL Alpha Bot: Operando en vivo...');
+    res.end('FastCL Ultra-Aggressive: Running...');
 }).listen(process.env.PORT || 3000);
 
-// --- CONFIGURACIÓN ---
+// --- CONFIGURACIÓN AGRESIVA ---
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const chatId = process.env.TELEGRAM_CHAT_ID;
 const SYMBOL = 'SOL/USDT';
-const CANTIDAD_SOL = 0.5; // <-- Ajusta aquí cuánto SOL comprar por operación
-const LÍMITE_RESCATE = 1.0; // Se apaga si el saldo baja de 1 USDT
+const LEVERAGE = 10;            // Apalancamiento 10X
+const MARGEN_USD = 10;          // Dólares a usar por operación
+const PROFIT_OBJETIVO = 1.2;    // Ganancia en USD para cerrar
+const LOSS_LIMITE = 0.5;        // Pérdida en USD para cerrar
+const UMBRAL_RSI_LONG = 28;     // RSI bajo para comprar
+const UMBRAL_RSI_SHORT = 72;    // RSI alto para vender
 
 const exchange = new ccxt.binance({
     apiKey: process.env.API_KEY,
@@ -25,72 +29,88 @@ const exchange = new ccxt.binance({
 
 async function avisar(msg) {
     try {
-        await bot.telegram.sendMessage(chatId, `🤖 *FastCL Alpha:* \n${msg}`, { parse_mode: 'Markdown' });
+        await bot.telegram.sendMessage(chatId, `🤖 *FastCL Ultra:* \n${msg}`, { parse_mode: 'Markdown' });
     } catch (e) { console.error("Error Telegram:", e.message); }
 }
 
-// --- INICIALIZACIÓN DE CUENTA ---
+// --- CONFIGURACIÓN INICIAL ---
 async function setup() {
     try {
-        await exchange.setLeverage(5, SYMBOL); // <--- APALANCAMIENTO A 5X
-        console.log(`✅ Apalancamiento ajustado a 5x para ${SYMBOL}`);
-    } catch (e) { console.error("⚠️ Error configurando apalancamiento:", e.message); }
+        await exchange.setLeverage(LEVERAGE, SYMBOL);
+        console.log(`✅ Configuración lista: ${LEVERAGE}x en ${SYMBOL}`);
+        await avisar(`SISTEMA INICIADO\nModo: Agresivo 10X\nTP: $${PROFIT_OBJETIVO} | SL: $${LOSS_LIMITE}`);
+    } catch (e) { console.error("⚠️ Error en Setup:", e.message); }
 }
 
 // --- LÓGICA DE TRADING ---
 async function tradingLoop() {
     try {
-        // 1. Verificación de Saldo
-        const balance = await exchange.fetchBalance();
-        const saldoActual = balance.total['USDT'];
+        // 1. Datos de Mercado y Posición
+        const ticker = await exchange.fetchTicker(SYMBOL);
+        const precioActual = ticker.last;
+        
+        const positions = await exchange.fetchPositions([SYMBOL]);
+        const pos = positions.find(p => p.symbol === SYMBOL);
+        const contratos = pos ? parseFloat(pos.contracts) : 0;
+        const enPosicion = Math.abs(contratos) > 0;
 
-        if (saldoActual < LÍMITE_RESCATE) {
-            await avisar(`🚨 *SALDO CRÍTICO:* ${saldoActual.toFixed(2)} USDT.\nDeteniendo bot por seguridad.`);
-            process.exit(0);
+        // 2. GESTIÓN DE POSICIÓN ACTIVA (TP / SL en dólares)
+        if (enPosicion) {
+            const precioEntrada = parseFloat(pos.entryPrice);
+            const lado = contratos > 0 ? 'LONG' : 'SHORT';
+            
+            // Cálculo de PnL real en USD
+            let pnlUSD = (precioActual - precioEntrada) * contratos;
+            if (lado === 'SHORT') pnlUSD = (precioEntrada - precioActual) * Math.abs(contratos);
+
+            console.log(`[${lado}] PnL actual: $${pnlUSD.toFixed(2)} USD`);
+
+            if (pnlUSD >= PROFIT_OBJETIVO || pnlUSD <= -LOSS_LIMITE) {
+                const motivo = pnlUSD >= PROFIT_OBJETIVO ? "✅ PROFIT" : "❌ STOP LOSS";
+                const sideToClose = lado === 'LONG' ? 'sell' : 'buy';
+                
+                await exchange.createMarketOrder(SYMBOL, sideToClose, Math.abs(contratos));
+                await avisar(`${motivo}\nCerrado con: $${pnlUSD.toFixed(2)} USD`);
+            }
+            return; // Salimos del loop para no abrir otra posición
         }
 
-        // 2. Obtención de RSI (Velas de 1 min)
+        // 3. LÓGICA DE ENTRADA (Solo si no hay posición)
         const ohlcv = await exchange.fetchOHLCV(SYMBOL, '1m', undefined, 20);
         const closes = ohlcv.map(val => val[4]);
         const rsiValues = RSI.calculate({ values: closes, period: 14 });
         const currentRSI = rsiValues[rsiValues.length - 1];
 
-        // 3. Verificación de Posición
-        const positions = await exchange.fetchPositions([SYMBOL]);
-        const pos = positions.find(p => p.symbol === SYMBOL);
-        const hasPosition = pos && Math.abs(parseFloat(pos.contracts)) > 0;
+        // Calcular tamaño de la orden (Margen * Palanca / Precio)
+        const amount = (MARGEN_USD * LEVERAGE) / precioActual;
 
-        console.log(`[${new Date().toLocaleTimeString()}] RSI: ${currentRSI.toFixed(2)} | SOL: ${closes[closes.length-1]}`);
+        console.log(`[Analizando] RSI: ${currentRSI.toFixed(2)} | Precio: ${precioActual}`);
 
-        // --- ESTRATEGIA EJECUTABLE ---
-        if (!hasPosition && currentRSI < 30) {
-            await avisar(`🚀 *ORDEN DE COMPRA ENVIADA*\nRSI: ${currentRSI.toFixed(2)}\nCantidad: ${CANTIDAD_SOL} SOL`);
-            await exchange.createMarketBuyOrder(SYMBOL, CANTIDAD_SOL); // COMPRA REAL
+        if (currentRSI <= UMBRAL_RSI_LONG) {
+            await avisar(`🚀 *ENTRADA LONG*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}`);
+            await exchange.createMarketBuyOrder(SYMBOL, amount);
         } 
-        else if (hasPosition && currentRSI > 70) {
-            await avisar(`💰 *ORDEN DE VENTA ENVIADA*\nRSI: ${currentRSI.toFixed(2)}\nCerrando posición...`);
-            await exchange.createMarketSellOrder(SYMBOL, Math.abs(pos.contracts)); // VENTA REAL
+        else if (currentRSI >= UMBRAL_RSI_SHORT) {
+            await avisar(`📉 *ENTRADA SHORT*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}`);
+            await exchange.createMarketSellOrder(SYMBOL, amount);
         }
 
-    } catch (e) { console.error("❌ Error en ciclo:", e.message); }
+    } catch (e) { 
+        console.error("❌ Error en ciclo:", e.message); 
+        if(e.message.includes("margin")) await avisar("🚨 Error: Margen insuficiente en Binance.");
+    }
 }
 
-// --- COMANDOS TELEGRAM ---
+// --- COMANDOS ---
 bot.command('status', async (ctx) => {
     try {
         const balance = await exchange.fetchBalance();
-        const ticker = await exchange.fetchTicker(SYMBOL);
-        ctx.replyWithMarkdown(`📊 *STATUS*\n💰 *Saldo:* ${balance.total['USDT'].toFixed(2)} USDT\n🚀 *SOL:* ${ticker.last} USDT\n⚙️ *Apalancamiento:* 5x`);
-    } catch (e) { ctx.reply("Error: " + e.message); }
-});
-
-bot.command('stop', () => {
-    avisar("🛑 Bot detenido.");
-    process.exit(0);
+        ctx.reply(`📊 Saldo: ${balance.total['USDT'].toFixed(2)} USDT\nBot operando a 10X`);
+    } catch (e) { ctx.reply("Error leyendo balance."); }
 });
 
 // ARRANCAR
 setup();
 bot.launch();
-setInterval(tradingLoop, 60000);
-console.log("🚀 FastCL Alpha: OPERANDO EN VIVO A 5X");
+setInterval(tradingLoop, 30000); // Revisión cada 30 segundos para mayor velocidad
+console.log("🔥 FastCL Ultra-Aggressive: OPERANDO");
