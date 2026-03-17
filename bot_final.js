@@ -74,7 +74,7 @@ async function tradingLoop() {
             return; 
         }
 
-        // 2. DETECCIÓN DE ENTRADAS
+        // 2. DETECCION DE ENTRADAS
         const ohlcv = await exchange.fetchOHLCV(SYMBOL, '1m', undefined, 20);
         const closes = ohlcv.map(val => val[4]);
         const rsiValues = RSI.calculate({ values: closes, period: 14 });
