@@ -18,8 +18,8 @@ const LEVERAGE = 10;            // Apalancamiento 10X
 const MARGEN_USD = 10;          // Dólares a usar por operación
 const PROFIT_OBJETIVO = 1.2;    // Ganancia en USD para cerrar
 const LOSS_LIMITE = 0.5;        // Pérdida en USD para cerrar
-const UMBRAL_RSI_LONG = 28;     // RSI bajo para comprar
-const UMBRAL_RSI_SHORT = 72;    // RSI alto para vender
+const UMBRAL_RSI_LONG = 40;     // RSI bajo para comprar
+const UMBRAL_RSI_SHORT = 60;    // RSI alto para vender
 
 const exchange = new ccxt.binance({
     apiKey: process.env.API_KEY,
