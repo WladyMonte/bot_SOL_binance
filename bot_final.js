@@ -1,7 +1,7 @@
 require('dotenv').config();
 const ccxt = require('ccxt');
 const { Telegraf } = require('telegraf');
-const { RSI } = require('technicalindicators');
+const { RSI, EMA } = require('technicalindicators');
 const http = require('http');
 
 // --- SERVIDOR KEEP-ALIVE ---
@@ -49,20 +49,39 @@ async function tradingLoop() {
         const ticker = await exchange.fetchTicker(SYMBOL);
         const precioActual = ticker.last;
         
-        const positions = await exchange.fetchPositions([SYMBOL]);
-        const pos = positions.find(p => p.symbol === SYMBOL);
-        const contratos = pos ? parseFloat(pos.contracts) : 0;
+        const positions = await exchange.fetchPositions();
+        const pos = positions.find(p => p.symbol === SYMBOL || (p.info && p.info.symbol === "SOLUSDT"));
+        let contratos = 0;
+        let precioEntrada = 0;
+
+        if (pos) {
+            if (pos.contracts !== undefined) contratos = Number(pos.contracts);
+            else if (pos.info && pos.info.positionAmt) contratos = Number(pos.info.positionAmt);
+            else if (pos.amount !== undefined) contratos = Number(pos.amount);
+            
+            precioEntrada = Number(pos.entryPrice || 0);
+        }
+        
         const enPosicion = Math.abs(contratos) > 0;
+
+        // OBTENER RSI Y EMA ANTES DE LA TOMA DE DECISIONES PARA LOGS
+        // Buscamos 250 velas para poder calcular EMA de 200
+        const ohlcv = await exchange.fetchOHLCV(SYMBOL, '1m', undefined, 250);
+        const closes = ohlcv.map(val => val[4]);
+        const rsiValues = RSI.calculate({ values: closes, period: 14 });
+        const currentRSI = rsiValues[rsiValues.length - 1];
+
+        const ema200Values = EMA.calculate({ values: closes, period: 200 });
+        const currentEMA200 = ema200Values.length > 0 ? ema200Values[ema200Values.length - 1] : precioActual;
 
         // 1. GESTIÓN DE SALIDAS (TP/SL)
         if (enPosicion) {
-            const precioEntrada = parseFloat(pos.entryPrice);
             const lado = contratos > 0 ? 'LONG' : 'SHORT';
             
             let pnlUSD = (precioActual - precioEntrada) * contratos;
             if (lado === 'SHORT') pnlUSD = (precioEntrada - precioActual) * Math.abs(contratos);
 
-            console.log(`[${new Date().toLocaleTimeString()}] ${lado} | PnL: $${pnlUSD.toFixed(2)}`);
+            console.log(`[${new Date().toLocaleTimeString()}] ${lado} Activo | RSI: ${currentRSI.toFixed(2)} | PnL: $${pnlUSD.toFixed(2)}`);
 
             if (pnlUSD >= PROFIT_OBJETIVO || pnlUSD <= -LOSS_LIMITE) {
                 const motivo = pnlUSD >= PROFIT_OBJETIVO ? "💰 PROFIT" : "🛑 STOP LOSS";
@@ -74,8 +93,13 @@ async function tradingLoop() {
                 } catch (err) {
                     await avisar(`❌ *ERROR CERRANDO POSICIÓN:*\n${err.message}`);
                 }
+            } else {
+                // Filtro de Seguridad Estricto: Logs de señales ignoradas por posición existente
+                if ((currentRSI <= RSI_ENTRADA_LONG && precioActual > currentEMA200) || (currentRSI >= RSI_ENTRADA_SHORT && precioActual < currentEMA200)) {
+                    console.log(`[ALERTA] Señal detectada (RSI: ${currentRSI.toFixed(2)}), pero ya hay una operación activa. Ignorando.`);
+                }
             }
-            return; 
+            return; // RETORNAR PARA NO ABRIR MULTIPLES POSICIONES
         }
 
         // 2. DETECCION DE ENTRADAS
@@ -84,30 +108,38 @@ async function tradingLoop() {
         let marginCalculado = availableBalance * 0.90;
         if (marginCalculado > 50) marginCalculado = 50;
 
-        const ohlcv = await exchange.fetchOHLCV(SYMBOL, '1m', undefined, 20);
-        const closes = ohlcv.map(val => val[4]);
-        const rsiValues = RSI.calculate({ values: closes, period: 14 });
-        const currentRSI = rsiValues[rsiValues.length - 1];
+        let amount = (marginCalculado * LEVERAGE) / precioActual;
+        
+        // Protección Notional > 10 USDT
+        let notionalCalculado = amount * precioActual;
+        if (notionalCalculado < 10) {
+            amount = 11 / precioActual; // Ajuste forzado para que supere los 10 USDT
+        }
 
-        const amount = (marginCalculado * LEVERAGE) / precioActual;
         const formattedAmount = Number(exchange.amountToPrecision(SYMBOL, amount));
 
-        console.log(`[SCAN] RSI: ${currentRSI.toFixed(2)} | SOL: ${precioActual}`);
+        console.log(`[SCAN] RSI: ${currentRSI.toFixed(2)} | EMA200: ${currentEMA200.toFixed(2)} | SOL: ${precioActual}`);
 
-        if (currentRSI <= RSI_ENTRADA_LONG) {
-            await avisar(`🚀 *LONG DETECTADO*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}`);
+        // Verificamos filtros de RSI + Tendencia (EMA 200)
+        const tendenciaAlcista = precioActual > currentEMA200;
+        const tendenciaBajista = precioActual < currentEMA200;
+
+        if (currentRSI <= RSI_ENTRADA_LONG && tendenciaAlcista) {
+            await avisar(`🚀 *LONG DETECTADO*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nEMA200: ${currentEMA200.toFixed(2)}`);
             try {
                 await exchange.createMarketBuyOrder(SYMBOL, formattedAmount);
             } catch (err) {
                 await avisar(`❌ *ERROR ABRIENDO LONG:*\n${err.message}`);
+                console.error("Error abriendo long:", err);
             }
         } 
-        else if (currentRSI >= RSI_ENTRADA_SHORT) {
-            await avisar(`📉 *SHORT DETECTADO*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}`);
+        else if (currentRSI >= RSI_ENTRADA_SHORT && tendenciaBajista) {
+            await avisar(`📉 *SHORT DETECTADO*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nEMA200: ${currentEMA200.toFixed(2)}`);
             try {
                 await exchange.createMarketSellOrder(SYMBOL, formattedAmount);
             } catch (err) {
                 await avisar(`❌ *ERROR ABRIENDO SHORT:*\n${err.message}`);
+                console.error("Error abriendo short:", err);
             }
         }
 
@@ -126,9 +158,14 @@ bot.command('status', async (ctx) => {
         let marginCalculado = availableBalance * 0.90;
         if (marginCalculado > 50) marginCalculado = 50;
 
-        const positions = await exchange.fetchPositions([SYMBOL]);
-        const pos = positions.find(p => p.symbol === SYMBOL);
-        const contratos = pos ? parseFloat(pos.contracts) : 0;
+        const positions = await exchange.fetchPositions();
+        const pos = positions.find(p => p.symbol === SYMBOL || (p.info && p.info.symbol === "SOLUSDT"));
+        let contratos = 0;
+        if (pos) {
+            if (pos.contracts !== undefined) contratos = Number(pos.contracts);
+            else if (pos.info && pos.info.positionAmt) contratos = Number(pos.info.positionAmt);
+            else if (pos.amount !== undefined) contratos = Number(pos.amount);
+        }
         const enPosicion = Math.abs(contratos) > 0;
         
         const estadoMsg = enPosicion ? "🟢 Operación Activa" : "⏳ Esperando señal";
@@ -145,10 +182,16 @@ bot.command('testbuy', async (ctx) => {
         if (marginCalculado > 50) marginCalculado = 50;
 
         const ticker = await exchange.fetchTicker(SYMBOL);
-        const amount = (marginCalculado * LEVERAGE) / ticker.last;
+        let amount = (marginCalculado * LEVERAGE) / ticker.last;
+        
+        let notionalCalculado = amount * ticker.last;
+        if (notionalCalculado < 10) {
+            amount = 11 / ticker.last;
+        }
+
         const formattedAmount = Number(exchange.amountToPrecision(SYMBOL, amount));
         await exchange.createMarketBuyOrder(SYMBOL, formattedAmount);
-        ctx.reply(`🔥 *ORDEN DE PRUEBA EJECUTADA*\nEntraste al mercado ahora mismo con $${marginCalculado.toFixed(2)} USD de margen.`);
+        ctx.reply(`🔥 *ORDEN DE PRUEBA EJECUTADA*\nEntraste al mercado con $${(amount * ticker.last / LEVERAGE).toFixed(2)} USD de margen.`);
     } catch (e) { ctx.reply("❌ Error en test: " + e.message); }
 });
 
