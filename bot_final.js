@@ -36,6 +36,7 @@ async function avisar(msg) {
 // --- SETUP INICIAL ---
 async function setup() {
     try {
+        await exchange.loadMarkets();
         await exchange.setLeverage(LEVERAGE, SYMBOL);
         await exchange.setMarginMode('ISOLATED', SYMBOL).catch(() => {}); // Intenta ponerlo en aislado
         console.log(`🚀 FastCL iniciado: 10X en ${SYMBOL}`);
@@ -68,8 +69,12 @@ async function tradingLoop() {
                 const motivo = pnlUSD >= PROFIT_OBJETIVO ? "💰 PROFIT" : "🛑 STOP LOSS";
                 const sideToClose = lado === 'LONG' ? 'sell' : 'buy';
                 
-                await exchange.createMarketOrder(SYMBOL, sideToClose, Math.abs(contratos));
-                await avisar(`${motivo}\nCerrado con: $${pnlUSD.toFixed(2)} USD`);
+                try {
+                    await exchange.createMarketOrder(SYMBOL, sideToClose, Math.abs(contratos), { reduceOnly: true });
+                    await avisar(`${motivo}\nCerrado con: $${pnlUSD.toFixed(2)} USD`);
+                } catch (err) {
+                    await avisar(`❌ *ERROR CERRANDO POSICIÓN:*\n${err.message}`);
+                }
             }
             return; 
         }
@@ -81,16 +86,25 @@ async function tradingLoop() {
         const currentRSI = rsiValues[rsiValues.length - 1];
 
         const amount = (MARGEN_USD * LEVERAGE) / precioActual;
+        const formattedAmount = Number(exchange.amountToPrecision(SYMBOL, amount));
 
         console.log(`[SCAN] RSI: ${currentRSI.toFixed(2)} | SOL: ${precioActual}`);
 
         if (currentRSI <= RSI_ENTRADA_LONG) {
             await avisar(`🚀 *LONG DETECTADO*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}`);
-            await exchange.createMarketBuyOrder(SYMBOL, amount);
+            try {
+                await exchange.createMarketBuyOrder(SYMBOL, formattedAmount);
+            } catch (err) {
+                await avisar(`❌ *ERROR ABRIENDO LONG:*\n${err.message}`);
+            }
         } 
         else if (currentRSI >= RSI_ENTRADA_SHORT) {
             await avisar(`📉 *SHORT DETECTADO*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}`);
-            await exchange.createMarketSellOrder(SYMBOL, amount);
+            try {
+                await exchange.createMarketSellOrder(SYMBOL, formattedAmount);
+            } catch (err) {
+                await avisar(`❌ *ERROR ABRIENDO SHORT:*\n${err.message}`);
+            }
         }
 
     } catch (e) { 
@@ -110,7 +124,8 @@ bot.command('testbuy', async (ctx) => {
     try {
         const ticker = await exchange.fetchTicker(SYMBOL);
         const amount = (MARGEN_USD * LEVERAGE) / ticker.last;
-        await exchange.createMarketBuyOrder(SYMBOL, amount);
+        const formattedAmount = Number(exchange.amountToPrecision(SYMBOL, amount));
+        await exchange.createMarketBuyOrder(SYMBOL, formattedAmount);
         ctx.reply("🔥 *ORDEN DE PRUEBA EJECUTADA*\nEntraste al mercado ahora mismo.");
     } catch (e) { ctx.reply("❌ Error en test: " + e.message); }
 });
