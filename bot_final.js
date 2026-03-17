@@ -15,7 +15,6 @@ const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const chatId = process.env.TELEGRAM_CHAT_ID;
 const SYMBOL = 'SOL/USDT';
 const LEVERAGE = 10;            
-const MARGEN_USD = 10;          
 const PROFIT_OBJETIVO = 1.2;    
 const LOSS_LIMITE = 0.5;        
 const RSI_ENTRADA_LONG = 28;    
@@ -80,12 +79,17 @@ async function tradingLoop() {
         }
 
         // 2. DETECCION DE ENTRADAS
+        const balance = await exchange.fetchBalance();
+        const availableBalance = balance.free['USDT'] || 0;
+        let marginCalculado = availableBalance * 0.90;
+        if (marginCalculado > 50) marginCalculado = 50;
+
         const ohlcv = await exchange.fetchOHLCV(SYMBOL, '1m', undefined, 20);
         const closes = ohlcv.map(val => val[4]);
         const rsiValues = RSI.calculate({ values: closes, period: 14 });
         const currentRSI = rsiValues[rsiValues.length - 1];
 
-        const amount = (MARGEN_USD * LEVERAGE) / precioActual;
+        const amount = (marginCalculado * LEVERAGE) / precioActual;
         const formattedAmount = Number(exchange.amountToPrecision(SYMBOL, amount));
 
         console.log(`[SCAN] RSI: ${currentRSI.toFixed(2)} | SOL: ${precioActual}`);
@@ -116,17 +120,35 @@ async function tradingLoop() {
 bot.command('status', async (ctx) => {
     try {
         const balance = await exchange.fetchBalance();
-        ctx.reply(`📊 Saldo: ${balance.total['USDT'].toFixed(2)} USDT\nBot operando a 10X\nTP: $1.2 | SL: $0.5`);
-    } catch (e) { ctx.reply("Error leyendo balance."); }
+        const availableBalance = balance.free['USDT'] || 0;
+        const totalBalance = balance.total['USDT'] || 0;
+        
+        let marginCalculado = availableBalance * 0.90;
+        if (marginCalculado > 50) marginCalculado = 50;
+
+        const positions = await exchange.fetchPositions([SYMBOL]);
+        const pos = positions.find(p => p.symbol === SYMBOL);
+        const contratos = pos ? parseFloat(pos.contracts) : 0;
+        const enPosicion = Math.abs(contratos) > 0;
+        
+        const estadoMsg = enPosicion ? "🟢 Operación Activa" : "⏳ Esperando señal";
+
+        ctx.reply(`📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen Próx. Operación: $${marginCalculado.toFixed(2)} USDT\n📈 Estado: ${estadoMsg}\n⚙️ Bot operando a ${LEVERAGE}X\n🎯 TP: $${PROFIT_OBJETIVO} | SL: $${LOSS_LIMITE}`);
+    } catch (e) { ctx.reply("Error leyendo estado."); }
 });
 
 bot.command('testbuy', async (ctx) => {
     try {
+        const balance = await exchange.fetchBalance();
+        const availableBalance = balance.free['USDT'] || 0;
+        let marginCalculado = availableBalance * 0.90;
+        if (marginCalculado > 50) marginCalculado = 50;
+
         const ticker = await exchange.fetchTicker(SYMBOL);
-        const amount = (MARGEN_USD * LEVERAGE) / ticker.last;
+        const amount = (marginCalculado * LEVERAGE) / ticker.last;
         const formattedAmount = Number(exchange.amountToPrecision(SYMBOL, amount));
         await exchange.createMarketBuyOrder(SYMBOL, formattedAmount);
-        ctx.reply("🔥 *ORDEN DE PRUEBA EJECUTADA*\nEntraste al mercado ahora mismo.");
+        ctx.reply(`🔥 *ORDEN DE PRUEBA EJECUTADA*\nEntraste al mercado ahora mismo con $${marginCalculado.toFixed(2)} USD de margen.`);
     } catch (e) { ctx.reply("❌ Error en test: " + e.message); }
 });
 
