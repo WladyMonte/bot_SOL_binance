@@ -165,6 +165,7 @@ async function tradingLoop() {
                         // Prioridad Absoluta: El mercado se movió más del 15% en 4h y además hay señal RSI + EMA
                         console.log(`[ALERTA] Movimiento extremo (>15%) detectado en ${symbol}! Priorizando orden.`);
                         await ejecutarEntrada(signalData, marginCalculado);
+                        console.log(`[LOOP] Escaneo finalizado: ${topCandidates.length} monedas revisadas, 1 señales encontradas.`);
                         return; // Detener flujo para asegurar única posición
                     } else if (!secondarySignal) {
                         // Guardar la primera señal válida por si ninguna otra tiene >15% de movimiento
@@ -176,10 +177,13 @@ async function tradingLoop() {
             }
         }
 
+        let senalesEncontradas = secondarySignal ? 1 : 0;
         // Si terminó el escáner del top 15 sin ninguna moneda prioritaria (>15%), ejecuta la mejor señal standard si se encontró
         if (secondarySignal) {
             await ejecutarEntrada(secondarySignal, marginCalculado);
         }
+
+        console.log(`[LOOP] Escaneo finalizado: ${topCandidates.length} monedas revisadas, ${senalesEncontradas} señales encontradas.`);
 
     } catch (e) { 
         console.error("❌ Error Ciclo:", e.message); 
@@ -245,7 +249,38 @@ bot.command('stop', (ctx) => {
     process.exit(0);
 });
 
+bot.command('top', async (ctx) => {
+    try {
+        await exchange.loadMarkets();
+        const allTickers = await exchange.fetchTickers();
+        const usdtFutures = Object.keys(exchange.markets).filter(s => {
+            const m = exchange.markets[s];
+            return m.active && m.linear && m.quote === 'USDT' && allTickers[s] && allTickers[s].quoteVolume > 15000000;
+        });
+
+        usdtFutures.sort((a, b) => Math.abs(allTickers[b].percentage || 0) - Math.abs(allTickers[a].percentage || 0));
+        
+        const top3 = usdtFutures.slice(0, 3);
+        let msg = "🏆 *Top 3 Monedas Volátiles (Futuros USDT-M):*\n\n";
+        for (let i = 0; i < top3.length; i++) {
+            const s = top3[i];
+            const t = allTickers[s];
+            msg += `${i+1}. *${s}*\n   Cambio 24h: ${t.percentage ? t.percentage.toFixed(2) : 0}%\n   Volumen: $${(t.quoteVolume / 1000000).toFixed(2)}M\n\n`;
+        }
+        ctx.reply(msg, { parse_mode: 'Markdown' });
+    } catch (e) {
+        ctx.reply("❌ Error obteniendo el Top 3: " + e.message);
+    }
+});
+
 // INICIO
 setup();
-bot.launch();
+
+// Demora al iniciar Telegraf para evitar conflicto 409 de instancias previas reiniciándose rápidamente (Railway)
+setTimeout(() => {
+    bot.launch({ dropPendingUpdates: true }).then(() => {
+        console.log("🤖 Telegram de FastCL Ultra iniciado correctamente.");
+    }).catch(err => console.error("❌ Error en Telegram Launch:", err.message));
+}, 5000); // 5 segundos de espera
+
 setInterval(tradingLoop, 30000); // Cada 30 segs
