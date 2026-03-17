@@ -1,16 +1,14 @@
 {
-  "name": "mi-trading-bot",
-  "version": "1.0.0",
+  "name": "fastcl-ultra",
+  "version": "2.0.0",
   "main": "bot_final.js",
   "scripts": {
     "start": "node bot_final.js"
   },
   "dependencies": {
-    "@drift-labs/sdk": "^2.159.0-beta.3",
-    "@solana/web3.js": "^1.98.4",
-    "ccxt": "^4.5.43",
-    "dotenv": "^17.3.1",
+    "ccxt": "^4.2.0",
+    "telegraf": "^4.15.0",
     "technicalindicators": "^3.1.0",
-    "telegraf": "^4.16.3"
+    "dotenv": "^16.3.1"
   }
 }
