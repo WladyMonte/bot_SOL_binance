@@ -16,8 +16,8 @@ const chatId = process.env.TELEGRAM_CHAT_ID;
 const LEVERAGE = 10;            
 const PROFIT_OBJETIVO = 1.2;    
 const LOSS_LIMITE = 0.5;        
-const RSI_ENTRADA_LONG = 28;    
-const RSI_ENTRADA_SHORT = 72;   
+const RSI_ENTRADA_LONG = 25;    
+const RSI_ENTRADA_SHORT = 75;   
 
 const exchange = new ccxt.binance({
     apiKey: process.env.API_KEY,
@@ -35,13 +35,13 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🚀 FastCL Ultra V4.0 (Universal Hunter) - Optimizado para Interés Compuesto iniciado: 10X GLOBAL`);
-        await avisar("🔥 *SISTEMA EN LINEA V4.0 - Universal Hunter*\nEscaneando todo el mercado de Futuros > $15M Vol\nFiltro: RSI + EMA200 Global | Prioridad: Volatilidad 4h > 15%\nObjetivo: +$1.2 / -$0.5");
+        console.log(`🚀 FastCL Ultra V4.3 (Nitro Pursuit) - 15s Scan | EMA 50`);
+        await avisar("🔥 *SISTEMA EN LINEA V4.3 - Nitro Pursuit*\nEscaneando todo el mercado de Futuros > $15M Vol\nFiltro: RSI + EMA50 Global | Prioridad: Volatilidad 4h > 15%\nObjetivo: +$1.2 / -$0.5");
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
 async function ejecutarEntrada(data, marginCalculado) {
-    const { symbol, signalType, currentRSI, precioActual, currentEMA200 } = data;
+    const { symbol, signalType, currentRSI, precioActual, currentEMA50 } = data;
     
     // Configurar apalancamiento y margen para el símbolo elegido dinámicamente
     await exchange.setLeverage(LEVERAGE, symbol).catch(() => {});
@@ -56,7 +56,7 @@ async function ejecutarEntrada(data, marginCalculado) {
     const formattedAmount = Number(exchange.amountToPrecision(symbol, amount));
 
     if (signalType === 'LONG') {
-        await avisar(`[${symbol}] 🚀 *LONG DETECTADO*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nEMA200: ${currentEMA200.toFixed(2)}`);
+        await avisar(`[${symbol}] 🚀 *LONG DETECTADO*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nEMA50: ${currentEMA50}`);
         try {
             await exchange.createMarketBuyOrder(symbol, formattedAmount);
         } catch (err) {
@@ -64,7 +64,7 @@ async function ejecutarEntrada(data, marginCalculado) {
             console.error(`Error abriendo long en ${symbol}:`, err);
         }
     } else {
-        await avisar(`[${symbol}] 📉 *SHORT DETECTADO*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nEMA200: ${currentEMA200.toFixed(2)}`);
+        await avisar(`[${symbol}] 📉 *SHORT DETECTADO*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nEMA50: ${currentEMA50}`);
         try {
             await exchange.createMarketSellOrder(symbol, formattedAmount);
         } catch (err) {
@@ -141,25 +141,25 @@ async function tradingLoop() {
 
                 const closes = ohlcv.map(v => v[4]);
                 const rsiValues = RSI.calculate({ values: closes, period: 14 });
-                const ema200Values = EMA.calculate({ values: closes, period: 200 });
+                const ema50Values = EMA.calculate({ values: closes, period: 50, format: (a) => a });
 
                 const currentRSI = rsiValues[rsiValues.length - 1];
-                const currentEMA200 = ema200Values[ema200Values.length - 1];
+                const currentEMA50 = ema50Values[ema50Values.length - 1];
                 const precioActual = closes[closes.length - 1];
 
                 // Movimiento 4h -> comparando precio de hace 240 velas (minutos) con el actual
                 const open4h = ohlcv[250 - 240][1];
                 const move4h = Math.abs((precioActual - open4h) / open4h) * 100;
 
-                const tendenciaAlcista = precioActual > currentEMA200;
-                const tendenciaBajista = precioActual < currentEMA200;
+                const tendenciaAlcista = precioActual > currentEMA50;
+                const tendenciaBajista = precioActual < currentEMA50;
 
                 let signalType = null;
                 if (currentRSI <= RSI_ENTRADA_LONG && tendenciaAlcista) signalType = 'LONG';
                 else if (currentRSI >= RSI_ENTRADA_SHORT && tendenciaBajista) signalType = 'SHORT';
 
                 if (signalType) {
-                    const signalData = { symbol, signalType, currentRSI, precioActual, currentEMA200 };
+                    const signalData = { symbol, signalType, currentRSI, precioActual, currentEMA50 };
                     
                     if (move4h > 15) {
                         // Prioridad Absoluta: El mercado se movió más del 15% en 4h y además hay señal RSI + EMA
@@ -206,7 +206,7 @@ bot.command('status', async (ctx) => {
         const enPosicion = openPositions.length > 0;
         const activeSymbol = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : "Ninguno";
         
-        const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : "🔍 Escaneando V4.0 (Universal Hunter)";
+        const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : "🔍 Escaneando V4.3 (Nitro Pursuit)";
 
         ctx.reply(`📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen Próx. Operación: $${marginCalculado.toFixed(2)} USDT\n📈 Estado: ${estadoMsg}\n⚙️ Bot operando a ${LEVERAGE}X GLOBAL\n🎯 TP: $${PROFIT_OBJETIVO} | SL: $${LOSS_LIMITE}`);
     } catch (e) { ctx.reply("Error leyendo estado."); }
@@ -283,4 +283,4 @@ setTimeout(() => {
     }).catch(err => console.error("❌ Error en Telegram Launch:", err.message));
 }, 5000); // 5 segundos de espera
 
-setInterval(tradingLoop, 30000); // Cada 30 segs
+setInterval(tradingLoop, 15000); // Cada 15 segs
