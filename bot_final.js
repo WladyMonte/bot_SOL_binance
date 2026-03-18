@@ -7,7 +7,7 @@ const http = require('http');
 // --- SERVIDOR KEEP-ALIVE ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('FastCL V5.1 Dynamic Control: Sistema Operativo');
+    res.end('FastCL V5.2 Trend Reversal Confirmation: Sistema Operativo');
 }).listen(process.env.PORT || 3000);
 
 // --- CONFIGURACIÓN TÉCNICA ---
@@ -41,13 +41,13 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🚀 V5.1 Dynamic Control - 15s Scan | Execution Fix`);
-        await avisar("🔥 *SISTEMA EN LINEA V5.1 - Dynamic Control*\nEscaneando Top 30 mercado Futuros por Volumen (>10M)\nFiltros: VWAP, Triple EMA, OrderBook Flow, RSI(7), Stoch, ATR.\nTP: +$1.0 / SL: 1.5x ATR | Limit GTC (30s timeout)\n\n*COMANDOS DISPONIBLES:*\n📊 /status - Estado actual y balance.\n🏆 /top - Ver las 30 monedas en vigilancia.\n⚡ /toggleema - Activar/Desactivar filtro de tendencia.\n⏸️ /pause / ▶️ /resume - Pausar o reanudar el bot.\n🚨 /panic - Cerrar todo y apagar.\n🧪 /testbuy [MONEDA] [LONG/SHORT] - Operación manual dinámica.");
+        console.log(`🚀 V5.2 Trend Reversal Confirmation - 15s Scan`);
+        await avisar("🔥 *SISTEMA EN LINEA V5.2 - Trend Reversal Confirmation*\nEscaneando Top 30 mercado Futuros por Volumen (>10M)\nFiltros: VWAP, Triple EMA, OrderBook Flow, RSI(7), Stoch, ATR.\nTP: +$1.0 / SL: 1.5x ATR | Limit GTC (30s timeout)\n\n*COMANDOS DISPONIBLES:*\n📊 /status - Estado actual y balance.\n🏆 /top - Ver las 30 monedas en vigilancia.\n⚡ /toggleema - Activar/Desactivar filtro de tendencia.\n⏸️ /pause / ▶️ /resume - Pausar o reanudar el bot.\n🚨 /panic - Cerrar todo y apagar.\n🧪 /testbuy [MONEDA] [LONG/SHORT] - Operación manual dinámica.");
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
 async function ejecutarEntrada(data, marginCalculado) {
-    const { symbol, signalType, currentRSI, precioActual, calculatedATR } = data;
+    const { symbol, signalType, currentRSI, precioActual, calculatedATR, isMarginHalved } = data;
     
     await exchange.setLeverage(LEVERAGE, symbol).catch(() => {});
     await exchange.setMarginMode('ISOLATED', symbol).catch(() => {});
@@ -69,7 +69,8 @@ async function ejecutarEntrada(data, marginCalculado) {
 
     if (signalType === 'LONG') {
         globalSLPrice = precioActual - (1.5 * calculatedATR);
-        await avisar(`[${symbol}] 🚀 *LONG DETECTADO (V5.1)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (-1.5x): ${globalSLPrice.toFixed(4)}`);
+        const msgMargin = isMarginHalved ? "\n⚠️ *Margen Reducido 50% (>20% Drop)*" : "";
+        await avisar(`[${symbol}] 🚀 *LONG DETECTADO (V5.2)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (-1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
         try {
             const order = await exchange.createOrder(symbol, 'limit', 'buy', formattedAmount, formattedPrice, { timeInForce: 'GTC' });
             setTimeout(() => { exchange.cancelOrder(order.id, symbol).catch(() => {}); }, 30000);
@@ -78,7 +79,8 @@ async function ejecutarEntrada(data, marginCalculado) {
         }
     } else {
         globalSLPrice = precioActual + (1.5 * calculatedATR);
-        await avisar(`[${symbol}] 📉 *SHORT DETECTADO (V5.1)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (+1.5x): ${globalSLPrice.toFixed(4)}`);
+        const msgMargin = isMarginHalved ? "\n⚠️ *Margen Reducido 50% (>20% Drop)*" : "";
+        await avisar(`[${symbol}] 📉 *SHORT DETECTADO (V5.2)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (+1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
         try {
             const order = await exchange.createOrder(symbol, 'limit', 'sell', formattedAmount, formattedPrice, { timeInForce: 'GTC' });
             setTimeout(() => { exchange.cancelOrder(order.id, symbol).catch(() => {}); }, 30000);
@@ -259,9 +261,20 @@ async function tradingLoop() {
                 const stochGiroLong = currentStoch.k > currentStoch.d && currentStoch.k > prevStoch.k;
                 const stochGiroShort = currentStoch.k < currentStoch.d && currentStoch.k < prevStoch.k;
 
+                // Green/Red Candle Confirmation
+                const prevCandle = ohlcv[ohlcv.length - 2];
+                const currCandle = ohlcv[ohlcv.length - 1];
+                const prevHigh = prevCandle[2];
+                const prevLow = prevCandle[3];
+                const currentOpen = currCandle[1];
+                
+                // Confirmación Vela Verde/Roja
+                const candleVerde = precioActual > currentOpen && precioActual > prevHigh;
+                const candleRoja = precioActual < currentOpen && precioActual < prevLow;
+
                 // Condiciones Long y Short
-                const precondicionLong = currentRSI < RSI_ENTRADA_LONG && tripleEmaLong && vwapLongCheck && ema15mLongCheck && rsi7GiroLong && stochGiroLong;
-                const precondicionShort = currentRSI > RSI_ENTRADA_SHORT && tripleEmaShort && vwapShortCheck && ema15mShortCheck && rsi7GiroShort && stochGiroShort;
+                const precondicionLong = currentRSI < RSI_ENTRADA_LONG && tripleEmaLong && vwapLongCheck && ema15mLongCheck && rsi7GiroLong && stochGiroLong && candleVerde;
+                const precondicionShort = currentRSI > RSI_ENTRADA_SHORT && tripleEmaShort && vwapShortCheck && ema15mShortCheck && rsi7GiroShort && stochGiroShort && candleRoja;
 
                 let signalType = null;
                 if (precondicionLong) signalType = 'LONG';
@@ -278,28 +291,39 @@ async function tradingLoop() {
                     if (signalType === 'LONG' && bidVol > askVol * 1.2) imbalancePass = true;
                     if (signalType === 'SHORT' && askVol > bidVol * 1.2) imbalancePass = true;
 
-                    // 2. Delta Check (Usando las últimas 2 velas de 1m para Taker Direction)
-                    let buyerVolume = 0;
-                    let sellerVolume = 0;
-                    const ultimasVelas = ohlcv.slice(-2);
-                    for (const v of ultimasVelas) {
-                        const open = v[1];
-                        const close = v[4];
-                        const vol = v[5];
-                        if (close > open) buyerVolume += vol;
-                        else if (close < open) sellerVolume += vol;
-                    }
+                    // 2. CVD Check (Taker Buy vs Sell Volume real en últimos 2 min)
                     let deltaPass = false;
-                    if (signalType === 'LONG' && buyerVolume > sellerVolume) deltaPass = true;
-                    if (signalType === 'SHORT' && sellerVolume > buyerVolume) deltaPass = true;
+                    try {
+                        const rawKlines = await exchange.fapiPublicGetKlines({ symbol: symbol.replace('/', ''), interval: '1m', limit: 2 });
+                        let takerBuyVol = 0;
+                        let takerSellVol = 0;
+                        for (const k of rawKlines) {
+                            const totalVol = parseFloat(k[5]);
+                            const tBuyVol = parseFloat(k[9]);
+                            takerBuyVol += tBuyVol;
+                            takerSellVol += (totalVol - tBuyVol);
+                        }
+                        if (signalType === 'LONG' && takerBuyVol > takerSellVol) deltaPass = true;
+                        if (signalType === 'SHORT' && takerSellVol > takerBuyVol) deltaPass = true;
+                    } catch (e) {
+                        console.error("Error fetching CVD volume:", e.message);
+                    }
 
                     if (imbalancePass && deltaPass) {
                         // Calcular ATR (Stop Loss dinámico)
                         const atrValues = ATR.calculate({ high: highs, low: lows, close: closes, period: 14 });
                         const calculatedATR = atrValues[atrValues.length - 1] || ((precioActual * 0.01));
 
-                        const signalData = { symbol, signalType, currentRSI, precioActual, calculatedATR };
-                        await ejecutarEntrada(signalData, marginCalculado);
+                        // 3. Margin Adjustment 20% Drop Protection
+                        let tradeMargin = marginCalculado;
+                        let isMarginHalved = false;
+                        if (allTickers[symbol] && allTickers[symbol].percentage < -20) {
+                            tradeMargin = tradeMargin / 2;
+                            isMarginHalved = true;
+                        }
+
+                        const signalData = { symbol, signalType, currentRSI, precioActual, calculatedATR, isMarginHalved };
+                        await ejecutarEntrada(signalData, tradeMargin);
                         return; // 1 trade máximo
                     }
                 }
@@ -327,7 +351,7 @@ async function reportarEstadoBot(ctx = null) {
         const enPosicion = openPositions.length > 0;
         const activeSymbol = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : "Ninguno";
         
-        let estadoStr = "🔍 Escaneando V5.1 (Oracle)";
+        let estadoStr = "🔍 Escaneando V5.2 (Trend Reversal)";
         if (isBotPaused) estadoStr = "⏸️ PAUSADO";
         const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : estadoStr;
         const emaEstatus = isEmaFilterActive ? "ON 🟢" : "OFF 🔴";
@@ -433,7 +457,7 @@ bot.command('pause', (ctx) => {
 
 bot.command('resume', (ctx) => {
     isBotPaused = false;
-    ctx.reply(`▶️ Bot REANUDADO V5.1.`);
+    ctx.reply(`▶️ Bot REANUDADO V5.2.`);
 });
 
 bot.command('panic', async (ctx) => {
@@ -478,7 +502,7 @@ bot.command('top', async (ctx) => {
 setup();
 setTimeout(() => {
     bot.launch({ dropPendingUpdates: true }).then(() => {
-        console.log("🤖 FastCL V5.1 Dynamic Control (Telegram) Init OK.");
+        console.log("🤖 FastCL V5.2 Trend Reversal Confirmation (Telegram) Init OK.");
     }).catch(err => console.error("❌ Error en Telegram Launch:", err.message));
 }, 5000);
 
