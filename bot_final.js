@@ -125,6 +125,16 @@ async function tradingLoop() {
             const precioActual = ticker.last;
             const lado = contratos > 0 ? 'LONG' : 'SHORT';
             
+            // Recalcular SL si se reinició el bot
+            if (!globalSLPrice) {
+                const ohlcvSL = await exchange.fetchOHLCV(activeSymbol, '1m', undefined, 100);
+                if (ohlcvSL && ohlcvSL.length > 50) {
+                    const atrV = ATR.calculate({ high: ohlcvSL.map(v=>v[2]), low: ohlcvSL.map(v=>v[3]), close: ohlcvSL.map(v=>v[4]), period: 14 });
+                    const currATR = atrV[atrV.length - 1] || (precioEntrada * 0.01);
+                    globalSLPrice = lado === 'LONG' ? precioEntrada - (1.5 * currATR) : precioEntrada + (1.5 * currATR);
+                }
+            }
+
             let pnlUSD = (precioActual - precioEntrada) * contratos;
             if (lado === 'SHORT') pnlUSD = (precioEntrada - precioActual) * Math.abs(contratos);
 
@@ -134,7 +144,7 @@ async function tradingLoop() {
             } else if (globalSLPrice) {
                 if (lado === 'LONG' && precioActual <= globalSLPrice) motivo = "🛑 STOP LOSS (1.5x ATR)";
                 if (lado === 'SHORT' && precioActual >= globalSLPrice) motivo = "🛑 STOP LOSS (1.5x ATR)";
-            } else if (pnlUSD <= -10.0) { // Failsafe fuerte si se pierde el SL global en un reinicio
+            } else if (pnlUSD <= -10.0) { // Failsafe extremo
                 motivo = "🛑 STOP LOSS (Failsafe)";
             }
 
@@ -259,16 +269,16 @@ async function tradingLoop() {
                     if (signalType === 'LONG' && bidVol > askVol * 1.5) imbalancePass = true;
                     if (signalType === 'SHORT' && askVol > bidVol * 1.5) imbalancePass = true;
 
-                    // 2. Delta Check
-                    const trades = await exchange.fetchTrades(symbol, undefined, 100);
-                    const twoMinsAgo = Date.now() - 2 * 60 * 1000;
+                    // 2. Delta Check (Usando las últimas 2 velas de 1m para Taker Direction)
                     let buyerVolume = 0;
                     let sellerVolume = 0;
-                    for (const t of trades) {
-                        if (t.timestamp >= twoMinsAgo) {
-                            if (t.side === 'buy') buyerVolume += t.amount;
-                            else if (t.side === 'sell') sellerVolume += t.amount;
-                        }
+                    const ultimasVelas = ohlcv.slice(-2);
+                    for (const v of ultimasVelas) {
+                        const open = v[1];
+                        const close = v[4];
+                        const vol = v[5];
+                        if (close > open) buyerVolume += vol;
+                        else if (close < open) sellerVolume += vol;
                     }
                     let deltaPass = false;
                     if (signalType === 'LONG' && buyerVolume > sellerVolume) deltaPass = true;
