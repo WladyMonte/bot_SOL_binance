@@ -7,17 +7,17 @@ const http = require('http');
 // --- SERVIDOR KEEP-ALIVE ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('FastCL Ultra-Aggressive: Sistema Operativo');
+    res.end('FastCL V4.4 Aggressive: Sistema Operativo');
 }).listen(process.env.PORT || 3000);
 
 // --- CONFIGURACIÓN TÉCNICA ---
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const chatId = process.env.TELEGRAM_CHAT_ID;
 const LEVERAGE = 10;            
-const PROFIT_OBJETIVO = 1.2;    
+const PROFIT_OBJETIVO = 1.0;    
 const LOSS_LIMITE = 0.5;        
-const RSI_ENTRADA_LONG = 25;    
-const RSI_ENTRADA_SHORT = 75;   
+const RSI_ENTRADA_LONG = 32;    
+const RSI_ENTRADA_SHORT = 68;   
 
 const exchange = new ccxt.binance({
     apiKey: process.env.API_KEY,
@@ -35,8 +35,8 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🚀 FastCL Ultra V4.3 (Nitro Pursuit) - 15s Scan | EMA 50`);
-        await avisar("🔥 *SISTEMA EN LINEA V4.3 - Nitro Pursuit*\nEscaneando todo el mercado de Futuros > $15M Vol\nFiltro: RSI + EMA50 Global | Prioridad: Volatilidad 4h > 15%\nObjetivo: +$1.2 / -$0.5");
+        console.log(`🚀 V4.4 Aggressive Hunter - 15s Scan | EMA 50`);
+        await avisar("🔥 *SISTEMA EN LINEA V4.4 - Aggressive Hunter*\nEscaneando Top 10 mercado Futuros por Volumen\nFiltro: RSI 32/68 + EMA50 | Prioridad: Volatilidad 1h > 5%\nObjetivo: +$1.0 / -$0.5");
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
@@ -126,12 +126,16 @@ async function tradingLoop() {
             return m.active && m.linear && m.quote === 'USDT' && allTickers[s] && allTickers[s].quoteVolume > 15000000;
         });
 
-        // Ordenamos por % de cambio 24h para analizar primero las más volátiles
-        usdtFutures.sort((a, b) => Math.abs(allTickers[b].percentage || 0) - Math.abs(allTickers[a].percentage || 0));
+        // Ordenamos por volumen para analizar el Top 10
+        usdtFutures.sort((a, b) => (allTickers[b].quoteVolume || 0) - (allTickers[a].quoteVolume || 0));
         
-        // Limitamos a top 15 para evitar golpear los límites de la API de Binance
-        const topCandidates = usdtFutures.slice(0, 15);
+        // Limitamos a top 10
+        const topCandidates = usdtFutures.slice(0, 10);
         let secondarySignal = null;
+        
+        let closestSymbol = null;
+        let closestRSI = null;
+        let minDistanceToTrigger = 100;
 
         for (const symbol of topCandidates) {
             try {
@@ -147,12 +151,23 @@ async function tradingLoop() {
                 const currentEMA50 = ema50Values[ema50Values.length - 1];
                 const precioActual = closes[closes.length - 1];
 
-                // Movimiento 4h -> comparando precio de hace 240 velas (minutos) con el actual
-                const open4h = ohlcv[250 - 240][1];
-                const move4h = Math.abs((precioActual - open4h) / open4h) * 100;
+                // Movimiento 1h -> comparando precio de hace 60 velas (minutos) con el actual
+                const open1h = ohlcv[250 - 60][1];
+                const move1h = Math.abs((precioActual - open1h) / open1h) * 100;
 
                 const tendenciaAlcista = precioActual > currentEMA50;
                 const tendenciaBajista = precioActual < currentEMA50;
+                
+                // Track Closest RSI
+                const distanceToLong = Math.abs(currentRSI - RSI_ENTRADA_LONG);
+                const distanceToShort = Math.abs(currentRSI - RSI_ENTRADA_SHORT);
+                const distance = Math.min(distanceToLong, distanceToShort);
+
+                if (distance < minDistanceToTrigger) {
+                    minDistanceToTrigger = distance;
+                    closestSymbol = symbol;
+                    closestRSI = currentRSI;
+                }
 
                 let signalType = null;
                 if (currentRSI <= RSI_ENTRADA_LONG && tendenciaAlcista) signalType = 'LONG';
@@ -161,14 +176,14 @@ async function tradingLoop() {
                 if (signalType) {
                     const signalData = { symbol, signalType, currentRSI, precioActual, currentEMA50 };
                     
-                    if (move4h > 15) {
-                        // Prioridad Absoluta: El mercado se movió más del 15% en 4h y además hay señal RSI + EMA
-                        console.log(`[ALERTA] Movimiento extremo (>15%) detectado en ${symbol}! Priorizando orden.`);
+                    if (move1h > 5) {
+                        // Prioridad Absoluta: El mercado se movió más del 5% en 1h y además hay señal RSI + EMA
+                        console.log(`[ALERTA] Movimiento extremo (>5% en 1h) detectado en ${symbol}! Priorizando orden.`);
                         await ejecutarEntrada(signalData, marginCalculado);
                         console.log(`[LOOP] Escaneo finalizado: ${topCandidates.length} monedas revisadas, 1 señales encontradas.`);
                         return; // Detener flujo para asegurar única posición
                     } else if (!secondarySignal) {
-                        // Guardar la primera señal válida por si ninguna otra tiene >15% de movimiento
+                        // Guardar la primera señal válida por si ninguna otra tiene >5% de movimiento
                         secondarySignal = signalData;
                     }
                 }
@@ -178,9 +193,15 @@ async function tradingLoop() {
         }
 
         let senalesEncontradas = secondarySignal ? 1 : 0;
-        // Si terminó el escáner del top 15 sin ninguna moneda prioritaria (>15%), ejecuta la mejor señal standard si se encontró
+        // Si terminó el escáner del top 10 sin ninguna moneda prioritaria (>5%), ejecuta la mejor señal standard si se encontró
         if (secondarySignal) {
             await ejecutarEntrada(secondarySignal, marginCalculado);
+        } else if (closestSymbol) {
+             const mensajeLog = `V4.4 Vigilando 10 monedas... RSI actual en ${closestSymbol}: ${closestRSI.toFixed(2)}`;
+             console.log(`[LOOP] ${mensajeLog}`);
+             try {
+                 await bot.telegram.sendMessage(chatId, `ℹ️ ${mensajeLog}`, { parse_mode: 'Markdown', disable_notification: true });
+             } catch(e) {}
         }
 
         console.log(`[LOOP] Escaneo finalizado: ${topCandidates.length} monedas revisadas, ${senalesEncontradas} señales encontradas.`);
@@ -206,7 +227,7 @@ bot.command('status', async (ctx) => {
         const enPosicion = openPositions.length > 0;
         const activeSymbol = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : "Ninguno";
         
-        const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : "🔍 Escaneando V4.3 (Nitro Pursuit)";
+        const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : "🔍 Escaneando V4.4 (Aggressive Hunter)";
 
         ctx.reply(`📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen Próx. Operación: $${marginCalculado.toFixed(2)} USDT\n📈 Estado: ${estadoMsg}\n⚙️ Bot operando a ${LEVERAGE}X GLOBAL\n🎯 TP: $${PROFIT_OBJETIVO} | SL: $${LOSS_LIMITE}`);
     } catch (e) { ctx.reply("Error leyendo estado."); }
@@ -258,12 +279,12 @@ bot.command('top', async (ctx) => {
             return m.active && m.linear && m.quote === 'USDT' && allTickers[s] && allTickers[s].quoteVolume > 15000000;
         });
 
-        usdtFutures.sort((a, b) => Math.abs(allTickers[b].percentage || 0) - Math.abs(allTickers[a].percentage || 0));
+        usdtFutures.sort((a, b) => (allTickers[b].quoteVolume || 0) - (allTickers[a].quoteVolume || 0));
         
-        const top3 = usdtFutures.slice(0, 3);
-        let msg = "🏆 *Top 3 Monedas Volátiles (Futuros USDT-M):*\n\n";
-        for (let i = 0; i < top3.length; i++) {
-            const s = top3[i];
+        const top10 = usdtFutures.slice(0, 10);
+        let msg = "🏆 *Top 10 Monedas por Volumen (Futuros USDT-M):*\n\n";
+        for (let i = 0; i < top10.length; i++) {
+            const s = top10[i];
             const t = allTickers[s];
             msg += `${i+1}. *${s}*\n   Cambio 24h: ${t.percentage ? t.percentage.toFixed(2) : 0}%\n   Volumen: $${(t.quoteVolume / 1000000).toFixed(2)}M\n\n`;
         }
