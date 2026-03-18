@@ -7,7 +7,7 @@ const http = require('http');
 // --- SERVIDOR KEEP-ALIVE ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('FastCL V4.4 Aggressive: Sistema Operativo');
+    res.end('FastCL V4.4.1 Silent Sniper: Sistema Operativo');
 }).listen(process.env.PORT || 3000);
 
 // --- CONFIGURACIÓN TÉCNICA ---
@@ -35,8 +35,8 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🚀 V4.4 Aggressive Hunter - 15s Scan | EMA 50`);
-        await avisar("🔥 *SISTEMA EN LINEA V4.4 - Aggressive Hunter*\nEscaneando Top 10 mercado Futuros por Volumen\nFiltro: RSI 32/68 + EMA50 | Prioridad: Volatilidad 1h > 5%\nObjetivo: +$1.0 / -$0.5");
+        console.log(`🚀 V4.4.1 Silent Sniper - 15s Scan | EMA 50`);
+        await avisar("🔥 *SISTEMA EN LINEA V4.4.1 - Silent Sniper*\nEscaneando Top 10 mercado Futuros por Volumen\nFiltro: RSI 32/68 + EMA50 | Prioridad: Volatilidad 1h > 5%\nObjetivo: +$1.0 / -$0.5");
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
@@ -197,11 +197,8 @@ async function tradingLoop() {
         if (secondarySignal) {
             await ejecutarEntrada(secondarySignal, marginCalculado);
         } else if (closestSymbol) {
-             const mensajeLog = `V4.4 Vigilando 10 monedas... RSI actual en ${closestSymbol}: ${closestRSI.toFixed(2)}`;
+             const mensajeLog = `V4.4.1 Vigilando 10 monedas... RSI actual en ${closestSymbol}: ${closestRSI.toFixed(2)}`;
              console.log(`[LOOP] ${mensajeLog}`);
-             try {
-                 await bot.telegram.sendMessage(chatId, `ℹ️ ${mensajeLog}`, { parse_mode: 'Markdown', disable_notification: true });
-             } catch(e) {}
         }
 
         console.log(`[LOOP] Escaneo finalizado: ${topCandidates.length} monedas revisadas, ${senalesEncontradas} señales encontradas.`);
@@ -212,7 +209,7 @@ async function tradingLoop() {
 }
 
 // --- COMANDOS DE TELEGRAM ---
-bot.command('status', async (ctx) => {
+async function reportarEstadoBot(ctx = null) {
     try {
         const balance = await exchange.fetchBalance();
         const availableBalance = balance.free['USDT'] || 0;
@@ -227,10 +224,23 @@ bot.command('status', async (ctx) => {
         const enPosicion = openPositions.length > 0;
         const activeSymbol = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : "Ninguno";
         
-        const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : "🔍 Escaneando V4.4 (Aggressive Hunter)";
+        const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : "🔍 Escaneando V4.4.1 (Silent Sniper)";
 
-        ctx.reply(`📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen Próx. Operación: $${marginCalculado.toFixed(2)} USDT\n📈 Estado: ${estadoMsg}\n⚙️ Bot operando a ${LEVERAGE}X GLOBAL\n🎯 TP: $${PROFIT_OBJETIVO} | SL: $${LOSS_LIMITE}`);
-    } catch (e) { ctx.reply("Error leyendo estado."); }
+        const msg = `📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen Próx. Operación: $${marginCalculado.toFixed(2)} USDT\n📈 Estado: ${estadoMsg}\n⚙️ Bot operando a ${LEVERAGE}X GLOBAL\n🎯 TP: $${PROFIT_OBJETIVO} | SL: $${LOSS_LIMITE}`;
+        
+        if (ctx) {
+            ctx.reply(msg);
+        } else {
+            await avisar(`⏳ *Heartbeat 1H* ⏳\n${msg}`);
+        }
+    } catch (e) { 
+        if (ctx) ctx.reply("Error leyendo estado.");
+        else console.error("Error Heartbeat:", e.message);
+    }
+}
+
+bot.command('status', async (ctx) => {
+    await reportarEstadoBot(ctx);
 });
 
 bot.command('testbuy', async (ctx) => {
@@ -305,3 +315,4 @@ setTimeout(() => {
 }, 5000); // 5 segundos de espera
 
 setInterval(tradingLoop, 15000); // Cada 15 segs
+setInterval(() => reportarEstadoBot(), 3600000); // Cada 1 hora
