@@ -7,7 +7,7 @@ const http = require('http');
 // --- SERVIDOR KEEP-ALIVE ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('FastCL V5.0 The Oracle: Sistema Operativo');
+    res.end('FastCL V5.1 Dynamic Control: Sistema Operativo');
 }).listen(process.env.PORT || 3000);
 
 // --- CONFIGURACIÓN TÉCNICA ---
@@ -41,8 +41,8 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🚀 V5.0 The Oracle - 15s Scan | Institutional Build`);
-        await avisar("🔥 *SISTEMA EN LINEA V5.0 - The Oracle*\nEscaneando Top 30 mercado Futuros por Volumen (>10M)\nFiltros: VWAP, Triple EMA, OrderBook Flow, RSI(7), Stoch, ATR.\nTP: +$1.0 / SL: 1.5x ATR | Limit IOC Orders\n\n*COMANDOS DISPONIBLES:*\n📊 /status - Estado actual y balance.\n🏆 /top - Ver las 30 monedas en vigilancia.\n⚡ /toggleema - Activar/Desactivar filtro de tendencia.\n⏸️ /pause / ▶️ /resume - Pausar o reanudar el bot.\n🚨 /panic - Cerrar todo y apagar.\n🧪 /testbuy [MONEDA] - Operación de prueba manual.");
+        console.log(`🚀 V5.1 Dynamic Control - 15s Scan | Execution Fix`);
+        await avisar("🔥 *SISTEMA EN LINEA V5.1 - Dynamic Control*\nEscaneando Top 30 mercado Futuros por Volumen (>10M)\nFiltros: VWAP, Triple EMA, OrderBook Flow, RSI(7), Stoch, ATR.\nTP: +$1.0 / SL: 1.5x ATR | Limit GTC (30s timeout)\n\n*COMANDOS DISPONIBLES:*\n📊 /status - Estado actual y balance.\n🏆 /top - Ver las 30 monedas en vigilancia.\n⚡ /toggleema - Activar/Desactivar filtro de tendencia.\n⏸️ /pause / ▶️ /resume - Pausar o reanudar el bot.\n🚨 /panic - Cerrar todo y apagar.\n🧪 /testbuy [MONEDA] [LONG/SHORT] - Operación manual dinámica.");
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
@@ -62,24 +62,26 @@ async function ejecutarEntrada(data, marginCalculado) {
     const marketInfo = exchange.markets[symbol];
     const pricePrecision = marketInfo.precision ? marketInfo.precision.price : 4;
     
-    // IOC Limit Order Config
-    // Usamos el precio actual +- 0.1% para la orden límite agresiva IOC
+    // GTC Limit Order Config con Timeout
+    // Usamos el precio actual +- 0.1% para la orden límite agresiva
     let orderPrice = signalType === 'LONG' ? precioActual * 1.001 : precioActual * 0.999;
     const formattedPrice = Number(exchange.priceToPrecision(symbol, orderPrice));
 
     if (signalType === 'LONG') {
         globalSLPrice = precioActual - (1.5 * calculatedATR);
-        await avisar(`[${symbol}] 🚀 *LONG DETECTADO (The Oracle)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (-1.5x): ${globalSLPrice.toFixed(4)}`);
+        await avisar(`[${symbol}] 🚀 *LONG DETECTADO (V5.1)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (-1.5x): ${globalSLPrice.toFixed(4)}`);
         try {
-            await exchange.createOrder(symbol, 'limit', 'buy', formattedAmount, formattedPrice, { timeInForce: 'IOC' });
+            const order = await exchange.createOrder(symbol, 'limit', 'buy', formattedAmount, formattedPrice, { timeInForce: 'GTC' });
+            setTimeout(() => { exchange.cancelOrder(order.id, symbol).catch(() => {}); }, 30000);
         } catch (err) {
             await avisar(`[${symbol}] ❌ *ERROR ABRIENDO LONG:*\n${err.message}`);
         }
     } else {
         globalSLPrice = precioActual + (1.5 * calculatedATR);
-        await avisar(`[${symbol}] 📉 *SHORT DETECTADO (The Oracle)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (+1.5x): ${globalSLPrice.toFixed(4)}`);
+        await avisar(`[${symbol}] 📉 *SHORT DETECTADO (V5.1)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (+1.5x): ${globalSLPrice.toFixed(4)}`);
         try {
-            await exchange.createOrder(symbol, 'limit', 'sell', formattedAmount, formattedPrice, { timeInForce: 'IOC' });
+            const order = await exchange.createOrder(symbol, 'limit', 'sell', formattedAmount, formattedPrice, { timeInForce: 'GTC' });
+            setTimeout(() => { exchange.cancelOrder(order.id, symbol).catch(() => {}); }, 30000);
         } catch (err) {
             await avisar(`[${symbol}] ❌ *ERROR ABRIENDO SHORT:*\n${err.message}`);
         }
@@ -191,13 +193,14 @@ async function tradingLoop() {
         
         for (const symbol of topCandidates) {
             try {
-                // Obtenemos velas de 1m (250) y 15m (100)
-                const [ohlcv, ohlcv15m] = await Promise.all([
+                // Obtenemos velas de 1m (250), 5m (100) y 15m (100)
+                const [ohlcv, ohlcv5m, ohlcv15m] = await Promise.all([
                     exchange.fetchOHLCV(symbol, '1m', undefined, 250),
+                    exchange.fetchOHLCV(symbol, '5m', undefined, 100),
                     exchange.fetchOHLCV(symbol, '15m', undefined, 100)
                 ]);
                 
-                if (!ohlcv || ohlcv.length < 250 || !ohlcv15m || ohlcv15m.length < 50) continue;
+                if (!ohlcv || ohlcv.length < 250 || !ohlcv5m || ohlcv5m.length < 50 || !ohlcv15m || ohlcv15m.length < 50) continue;
 
                 // --- Capa de Confluencia (Bias & Trend) ---
                 const closes15m = ohlcv15m.map(v => v[4]);
@@ -211,6 +214,13 @@ async function tradingLoop() {
 
                 const vwapActual = calcularVWAPIntradia(ohlcv15m) || currentEMA50_15m; 
                 
+                // --- RSIs y Capa Sniper (Calculado primero para Flexibilidad de Tendencia) ---
+                const rsiValues = RSI.calculate({ values: closes, period: 14 });
+                const currentRSI = rsiValues[rsiValues.length - 1];
+
+                const rsi5mValues = RSI.calculate({ values: ohlcv5m.map(v => v[4]), period: 14 });
+                const currentRSI5m = rsi5mValues[rsi5mValues.length - 1];
+
                 // Triple EMA Cross (13, 26, 50 en 1m)
                 const ema13Values = EMA.calculate({ values: closes, period: 13 });
                 const ema26Values = EMA.calculate({ values: closes, period: 26 });
@@ -219,19 +229,18 @@ async function tradingLoop() {
                 const ema26 = ema26Values[ema26Values.length - 1];
                 const ema50 = ema50Values[ema50Values.length - 1];
 
-                // Filtros tendenciales base The Oracle
+                // Filtros tendenciales base V5.1
                 const vwapLongCheck = !isEmaFilterActive || precioActual > vwapActual;
                 const vwapShortCheck = !isEmaFilterActive || precioActual < vwapActual;
                 
-                const ema15mLongCheck = !isEmaFilterActive || precioActual > currentEMA50_15m;
-                const ema15mShortCheck = !isEmaFilterActive || precioActual < currentEMA50_15m;
+                const rsiFuerteLong = currentRSI < RSI_ENTRADA_LONG && currentRSI5m < RSI_ENTRADA_LONG;
+                const rsiFuerteShort = currentRSI > RSI_ENTRADA_SHORT && currentRSI5m > RSI_ENTRADA_SHORT;
+
+                const ema15mLongCheck = !isEmaFilterActive || precioActual > currentEMA50_15m || rsiFuerteLong;
+                const ema15mShortCheck = !isEmaFilterActive || precioActual < currentEMA50_15m || rsiFuerteShort;
 
                 const tripleEmaLong = ema13 > ema26 && ema26 > ema50;
                 const tripleEmaShort = ema13 < ema26 && ema26 < ema50;
-
-                // --- Capa Sniper (Gatillos) ---
-                const rsiValues = RSI.calculate({ values: closes, period: 14 });
-                const currentRSI = rsiValues[rsiValues.length - 1];
 
                 const rsi7Values = RSI.calculate({ values: closes, period: 7 });
                 const currentRsi7 = rsi7Values[rsi7Values.length - 1];
@@ -260,14 +269,14 @@ async function tradingLoop() {
 
                 if (signalType) {
                     // --- Capa de Flujo (Order Flow & DOM) ---
-                    // 1. Imbalance del order book
+                    // 1. Imbalance del order book (Relajado a 1.2x)
                     const ob = await exchange.fetchOrderBook(symbol, 20);
                     const bidVol = ob.bids.reduce((acc, val) => acc + val[1], 0);
                     const askVol = ob.asks.reduce((acc, val) => acc + val[1], 0);
                     
                     let imbalancePass = false;
-                    if (signalType === 'LONG' && bidVol > askVol * 1.5) imbalancePass = true;
-                    if (signalType === 'SHORT' && askVol > bidVol * 1.5) imbalancePass = true;
+                    if (signalType === 'LONG' && bidVol > askVol * 1.2) imbalancePass = true;
+                    if (signalType === 'SHORT' && askVol > bidVol * 1.2) imbalancePass = true;
 
                     // 2. Delta Check (Usando las últimas 2 velas de 1m para Taker Direction)
                     let buyerVolume = 0;
@@ -318,12 +327,12 @@ async function reportarEstadoBot(ctx = null) {
         const enPosicion = openPositions.length > 0;
         const activeSymbol = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : "Ninguno";
         
-        let estadoStr = "🔍 Escaneando V5.0 (Oracle)";
+        let estadoStr = "🔍 Escaneando V5.1 (Oracle)";
         if (isBotPaused) estadoStr = "⏸️ PAUSADO";
         const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : estadoStr;
         const emaEstatus = isEmaFilterActive ? "ON 🟢" : "OFF 🔴";
 
-        const msg = `📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen: $${marginCalculado.toFixed(2)} USDT\n📈 Estado: ${estadoMsg}\n⚙️ Global: ${LEVERAGE}X | Limit IOC\n🎯 TP: $${PROFIT_OBJETIVO} | SL: 1.5x ATR\n📉 Filtros (VWAP, EMA, Flow): ${emaEstatus}`;
+        const msg = `📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen: $${marginCalculado.toFixed(2)} USDT\n📈 Estado: ${estadoMsg}\n⚙️ Global: ${LEVERAGE}X | Limit GTC (30s)\n🎯 TP: $${PROFIT_OBJETIVO} | SL: 1.5x ATR\n📉 Filtros (VWAP, EMA, Flow): ${emaEstatus}`;
         
         if (ctx) ctx.reply(msg);
         else await avisar(`⏳ *Heartbeat 1H* ⏳\n${msg}`);
@@ -337,13 +346,54 @@ bot.command('status', async (ctx) => { await reportarEstadoBot(ctx); });
 
 bot.command('testbuy', async (ctx) => {
     try {
-        const msg = ctx.message.text.trim().split(' ');
-        let testSymbolStr = msg.length > 1 ? msg[1].toUpperCase() : 'SOL';
-        if(testSymbolStr.includes('/')) testSymbolStr = testSymbolStr.split('/')[0];
-        
+        const args = ctx.message.text.trim().split(' ').slice(1);
+        let testSymbolStr = null;
+        let testSideStr = null; // Autodetect if null
+
+        for (const p of args) {
+            const part = p.toUpperCase();
+            if (part === 'LONG' || part === 'SHORT') testSideStr = part;
+            else testSymbolStr = part.includes('/') ? part.split('/')[0] : part;
+        }
+
         await exchange.loadMarkets();
+
+        if (!testSymbolStr) {
+            ctx.reply("Buscando mejor moneda (Top 30 + RSI)...");
+            const allTickers = await exchange.fetchTickers();
+            const usdtFutures = Object.keys(exchange.markets).filter(s => {
+                const m = exchange.markets[s];
+                return m.active && m.linear && m.quote === 'USDT' && allTickers[s] && allTickers[s].quoteVolume > 10000000;
+            });
+            usdtFutures.sort((a, b) => (allTickers[b].quoteVolume || 0) - (allTickers[a].quoteVolume || 0));
+            const top30 = usdtFutures.slice(0, 30);
+            
+            let bestRSI = testSideStr === 'SHORT' ? 0 : 100;
+            let bestSymbol = 'SOL/USDT';
+            
+            for(const s of top30) {
+                try {
+                    const ohlcv = await exchange.fetchOHLCV(s, '1m', undefined, 20);
+                    if(!ohlcv || ohlcv.length < 15) continue;
+                    const closes = ohlcv.map(v => v[4]);
+                    const rsiValues = RSI.calculate({ values: closes, period: 14 });
+                    const currentRSI = rsiValues[rsiValues.length - 1];
+                    
+                    if (testSideStr === 'SHORT') {
+                        if (currentRSI > bestRSI) { bestRSI = currentRSI; bestSymbol = s; }
+                    } else { // default as LONG checks for lowest RSI
+                        if (currentRSI < bestRSI) { bestRSI = currentRSI; bestSymbol = s; }
+                    }
+                } catch(e) {}
+            }
+            testSymbolStr = bestSymbol.split('/')[0];
+            testSideStr = testSideStr || 'LONG'; // fallback para la orden
+        } else if (!testSideStr) {
+            testSideStr = 'LONG';
+        }
+
         const market = Object.values(exchange.markets).find(m => m.base === testSymbolStr && m.quote === 'USDT' && m.linear && m.active);
-        const targetSymbol = market ? market.symbol : 'SOL/USDT';
+        const targetSymbol = market ? market.symbol : `${testSymbolStr}/USDT`;
 
         const balance = await exchange.fetchBalance();
         const availableBalance = balance.free['USDT'] || 0;
@@ -359,10 +409,15 @@ bot.command('testbuy', async (ctx) => {
         if (notionalCalculado < 10) amount = 11 / ticker.last;
 
         const formattedAmount = Number(exchange.amountToPrecision(targetSymbol, amount));
-        const orderPrice = Number(exchange.priceToPrecision(targetSymbol, ticker.last * 1.001));
         
-        await exchange.createOrder(targetSymbol, 'limit', 'buy', formattedAmount, orderPrice, { timeInForce: 'IOC' });
-        ctx.reply(`[${targetSymbol}] 🔥 *ORDEN DE PRUEBA (Limit IOC) EJECUTADA*\nMargen base: $${(amount * ticker.last / LEVERAGE).toFixed(2)} USD.`);
+        let orderPrice = testSideStr === 'LONG' ? ticker.last * 1.001 : ticker.last * 0.999;
+        const formattedPrice = Number(exchange.priceToPrecision(targetSymbol, orderPrice));
+        const orderSide = testSideStr === 'LONG' ? 'buy' : 'sell';
+        
+        const order = await exchange.createOrder(targetSymbol, 'limit', orderSide, formattedAmount, formattedPrice, { timeInForce: 'GTC' });
+        setTimeout(() => { exchange.cancelOrder(order.id, targetSymbol).catch(() => {}); }, 30000);
+        
+        ctx.reply(`[${targetSymbol}] 🔥 *ORDEN DE PRUEBA ${testSideStr} (Limit GTC 30s) EJECUTADA*\nMargen base: $${(amount * ticker.last / LEVERAGE).toFixed(2)} USD.`);
     } catch (e) { ctx.reply("❌ Error en test: " + e.message); }
 });
 
@@ -378,7 +433,7 @@ bot.command('pause', (ctx) => {
 
 bot.command('resume', (ctx) => {
     isBotPaused = false;
-    ctx.reply(`▶️ Bot REANUDADO V5.0.`);
+    ctx.reply(`▶️ Bot REANUDADO V5.1.`);
 });
 
 bot.command('panic', async (ctx) => {
@@ -423,7 +478,7 @@ bot.command('top', async (ctx) => {
 setup();
 setTimeout(() => {
     bot.launch({ dropPendingUpdates: true }).then(() => {
-        console.log("🤖 FastCL V5.0 The Oracle (Telegram) Init OK.");
+        console.log("🤖 FastCL V5.1 Dynamic Control (Telegram) Init OK.");
     }).catch(err => console.error("❌ Error en Telegram Launch:", err.message));
 }, 5000);
 
