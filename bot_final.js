@@ -7,7 +7,7 @@ const http = require('http');
 // --- SERVIDOR KEEP-ALIVE ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('FastCL V5.2 Trend Reversal Confirmation: Sistema Operativo');
+    res.end('FastCL V5.3 Ghost Mode: Sistema Operativo');
 }).listen(process.env.PORT || 3000);
 
 // --- CONFIGURACIÓN TÉCNICA ---
@@ -41,8 +41,8 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🚀 V5.2 Trend Reversal Confirmation - 15s Scan`);
-        await avisar("🔥 *SISTEMA EN LINEA V5.2 - Trend Reversal Confirmation*\nEscaneando Top 30 mercado Futuros por Volumen (>10M)\nFiltros: VWAP, Triple EMA, OrderBook Flow, RSI(7), Stoch, ATR.\nTP: +$1.0 / SL: 1.5x ATR | Limit GTC (30s timeout)\n\n*COMANDOS DISPONIBLES:*\n📊 /status - Estado actual y balance.\n🏆 /top - Ver las 30 monedas en vigilancia.\n⚡ /toggleema - Activar/Desactivar filtro de tendencia.\n⏸️ /pause / ▶️ /resume - Pausar o reanudar el bot.\n🚨 /panic - Cerrar todo y apagar.\n🧪 /testbuy [MONEDA] [LONG/SHORT] - Operación manual dinámica.");
+        console.log(`🚀 V5.3 Ghost Mode - 30s Scan`);
+        await avisar("🔥 *SISTEMA EN LINEA V5.3 - Ghost Mode*\nEscaneando Top 30 mercado Futuros por Volumen (>10M)\nFiltros: VWAP, Triple EMA, OrderBook Flow, RSI(7), Stoch, ATR.\nTP: +$1.0 / SL: 1.5x ATR | Limit GTC (30s timeout)\n\n*COMANDOS DISPONIBLES:*\n📊 /status - Estado actual y balance.\n🏆 /top - Ver las 30 monedas en vigilancia.\n⚡ /toggleema - Activar/Desactivar filtro de tendencia.\n⏸️ /pause / ▶️ /resume - Pausar o reanudar el bot.\n🚨 /panic - Cerrar todo y apagar.\n🧪 /testbuy [MONEDA] [LONG/SHORT] - Operación manual dinámica.");
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
@@ -70,7 +70,7 @@ async function ejecutarEntrada(data, marginCalculado) {
     if (signalType === 'LONG') {
         globalSLPrice = precioActual - (1.5 * calculatedATR);
         const msgMargin = isMarginHalved ? "\n⚠️ *Margen Reducido 50% (>20% Variación)*" : "";
-        await avisar(`[${symbol}] 🚀 *LONG DETECTADO (V5.2)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (-1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
+        await avisar(`[${symbol}] 🚀 *LONG DETECTADO (V5.3)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (-1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
         try {
             const order = await exchange.createOrder(symbol, 'limit', 'buy', formattedAmount, formattedPrice, { timeInForce: 'GTC' });
             setTimeout(() => { exchange.cancelOrder(order.id, symbol).catch(() => {}); }, 30000);
@@ -80,7 +80,7 @@ async function ejecutarEntrada(data, marginCalculado) {
     } else {
         globalSLPrice = precioActual + (1.5 * calculatedATR);
         const msgMargin = isMarginHalved ? "\n⚠️ *Margen Reducido 50% (>20% Variación)*" : "";
-        await avisar(`[${symbol}] 📉 *SHORT DETECTADO (V5.2)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (+1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
+        await avisar(`[${symbol}] 📉 *SHORT DETECTADO (V5.3)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (+1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
         try {
             const order = await exchange.createOrder(symbol, 'limit', 'sell', formattedAmount, formattedPrice, { timeInForce: 'GTC' });
             setTimeout(() => { exchange.cancelOrder(order.id, symbol).catch(() => {}); }, 30000);
@@ -195,35 +195,21 @@ async function tradingLoop() {
         
         for (const symbol of topCandidates) {
             try {
-                // Obtenemos velas de 1m (250), 5m (100) y 15m (100)
-                const [ohlcv, ohlcv5m, ohlcv15m] = await Promise.all([
-                    exchange.fetchOHLCV(symbol, '1m', undefined, 250),
-                    exchange.fetchOHLCV(symbol, '5m', undefined, 100),
-                    exchange.fetchOHLCV(symbol, '15m', undefined, 100)
-                ]);
-                
-                if (!ohlcv || ohlcv.length < 250 || !ohlcv5m || ohlcv5m.length < 50 || !ohlcv15m || ohlcv15m.length < 50) continue;
+                // Ghost Mode: Delay de 100ms para no saturar IP
+                await new Promise(r => setTimeout(r, 100));
 
-                // --- Capa de Confluencia (Bias & Trend) ---
-                const closes15m = ohlcv15m.map(v => v[4]);
-                const ema50_15mValues = EMA.calculate({ values: closes15m, period: 50 });
-                const currentEMA50_15m = ema50_15mValues[ema50_15mValues.length - 1];
+                // Fase 1: Filtro Ligero en 1m
+                const ohlcv = await exchange.fetchOHLCV(symbol, '1m', undefined, 250);
+                if (!ohlcv || ohlcv.length < 250) continue;
 
                 const closes = ohlcv.map(v => v[4]);
                 const highs = ohlcv.map(v => v[2]);
                 const lows = ohlcv.map(v => v[3]);
                 const precioActual = closes[closes.length - 1];
 
-                const vwapActual = calcularVWAPIntradia(ohlcv15m) || currentEMA50_15m; 
-                
-                // --- RSIs y Capa Sniper (Calculado primero para Flexibilidad de Tendencia) ---
                 const rsiValues = RSI.calculate({ values: closes, period: 14 });
                 const currentRSI = rsiValues[rsiValues.length - 1];
 
-                const rsi5mValues = RSI.calculate({ values: ohlcv5m.map(v => v[4]), period: 14 });
-                const currentRSI5m = rsi5mValues[rsi5mValues.length - 1];
-
-                // Triple EMA Cross (13, 26, 50 en 1m)
                 const ema13Values = EMA.calculate({ values: closes, period: 13 });
                 const ema26Values = EMA.calculate({ values: closes, period: 26 });
                 const ema50Values = EMA.calculate({ values: closes, period: 50 });
@@ -231,7 +217,57 @@ async function tradingLoop() {
                 const ema26 = ema26Values[ema26Values.length - 1];
                 const ema50 = ema50Values[ema50Values.length - 1];
 
-                // Filtros tendenciales base V5.1
+                const tripleEmaLong = ema13 > ema26 && ema26 > ema50;
+                const tripleEmaShort = ema13 < ema26 && ema26 < ema50;
+
+                const rsi7Values = RSI.calculate({ values: closes, period: 7 });
+                const currentRsi7 = rsi7Values[rsi7Values.length - 1];
+                const prevRsi7 = rsi7Values[rsi7Values.length - 2];
+                const rsi7GiroLong = currentRsi7 > prevRsi7;
+                const rsi7GiroShort = currentRsi7 < prevRsi7;
+
+                const stochValues = Stochastic.calculate({ high: highs, low: lows, close: closes, period: 14, signalPeriod: 3 });
+                const currentStoch = stochValues[stochValues.length - 1];
+                const prevStoch = stochValues[stochValues.length - 2];
+                if(!currentStoch || !prevStoch) continue;
+
+                const stochGiroLong = currentStoch.k > currentStoch.d && currentStoch.k > prevStoch.k;
+                const stochGiroShort = currentStoch.k < currentStoch.d && currentStoch.k < prevStoch.k;
+
+                const prevCandle = ohlcv[ohlcv.length - 2];
+                const currCandle = ohlcv[ohlcv.length - 1];
+                const prevHigh = prevCandle[2];
+                const prevLow = prevCandle[3];
+                const currentOpen = currCandle[1];
+                
+                const candleVerde = precioActual > currentOpen && precioActual > prevHigh;
+                const candleRoja = precioActual < currentOpen && precioActual < prevLow;
+
+                const pre1mLong = currentRSI < RSI_ENTRADA_LONG && tripleEmaLong && rsi7GiroLong && stochGiroLong && candleVerde;
+                const pre1mShort = currentRSI > RSI_ENTRADA_SHORT && tripleEmaShort && rsi7GiroShort && stochGiroShort && candleRoja;
+
+                if (!pre1mLong && !pre1mShort) continue; // Early exit Ghost Mode
+
+                // Fase 2: Confirmación Pesada usando Promise.allSettled
+                const results = await Promise.allSettled([
+                    exchange.fetchOHLCV(symbol, '5m', undefined, 100),
+                    exchange.fetchOHLCV(symbol, '15m', undefined, 100)
+                ]);
+                if (results[0].status !== 'fulfilled' || results[1].status !== 'fulfilled') continue;
+                
+                const ohlcv5m = results[0].value;
+                const ohlcv15m = results[1].value;
+                if (!ohlcv5m || ohlcv5m.length < 50 || !ohlcv15m || ohlcv15m.length < 50) continue;
+
+                const closes15m = ohlcv15m.map(v => v[4]);
+                const ema50_15mValues = EMA.calculate({ values: closes15m, period: 50 });
+                const currentEMA50_15m = ema50_15mValues[ema50_15mValues.length - 1];
+
+                const vwapActual = calcularVWAPIntradia(ohlcv15m) || currentEMA50_15m; 
+                
+                const rsi5mValues = RSI.calculate({ values: ohlcv5m.map(v => v[4]), period: 14 });
+                const currentRSI5m = rsi5mValues[rsi5mValues.length - 1];
+
                 const vwapLongCheck = !isEmaFilterActive || precioActual > vwapActual;
                 const vwapShortCheck = !isEmaFilterActive || precioActual < vwapActual;
                 
@@ -241,40 +277,8 @@ async function tradingLoop() {
                 const ema15mLongCheck = !isEmaFilterActive || precioActual > currentEMA50_15m || rsiFuerteLong;
                 const ema15mShortCheck = !isEmaFilterActive || precioActual < currentEMA50_15m || rsiFuerteShort;
 
-                const tripleEmaLong = ema13 > ema26 && ema26 > ema50;
-                const tripleEmaShort = ema13 < ema26 && ema26 < ema50;
-
-                const rsi7Values = RSI.calculate({ values: closes, period: 7 });
-                const currentRsi7 = rsi7Values[rsi7Values.length - 1];
-                const prevRsi7 = rsi7Values[rsi7Values.length - 2];
-                // RSI 7 girando
-                const rsi7GiroLong = currentRsi7 > prevRsi7;
-                const rsi7GiroShort = currentRsi7 < prevRsi7;
-
-                // Stochastic (14, 3, 3)
-                const stochValues = Stochastic.calculate({ high: highs, low: lows, close: closes, period: 14, signalPeriod: 3 });
-                const currentStoch = stochValues[stochValues.length - 1];
-                const prevStoch = stochValues[stochValues.length - 2];
-                if(!currentStoch || !prevStoch) continue;
-
-                // Stoch alineado (K y D) y girando
-                const stochGiroLong = currentStoch.k > currentStoch.d && currentStoch.k > prevStoch.k;
-                const stochGiroShort = currentStoch.k < currentStoch.d && currentStoch.k < prevStoch.k;
-
-                // Green/Red Candle Confirmation
-                const prevCandle = ohlcv[ohlcv.length - 2];
-                const currCandle = ohlcv[ohlcv.length - 1];
-                const prevHigh = prevCandle[2];
-                const prevLow = prevCandle[3];
-                const currentOpen = currCandle[1];
-                
-                // Confirmación Vela Verde/Roja
-                const candleVerde = precioActual > currentOpen && precioActual > prevHigh;
-                const candleRoja = precioActual < currentOpen && precioActual < prevLow;
-
-                // Condiciones Long y Short
-                const precondicionLong = currentRSI < RSI_ENTRADA_LONG && tripleEmaLong && vwapLongCheck && ema15mLongCheck && rsi7GiroLong && stochGiroLong && candleVerde;
-                const precondicionShort = currentRSI > RSI_ENTRADA_SHORT && tripleEmaShort && vwapShortCheck && ema15mShortCheck && rsi7GiroShort && stochGiroShort && candleRoja;
+                const precondicionLong = pre1mLong && vwapLongCheck && ema15mLongCheck;
+                const precondicionShort = pre1mShort && vwapShortCheck && ema15mShortCheck;
 
                 let signalType = null;
                 if (precondicionLong) signalType = 'LONG';
@@ -351,7 +355,7 @@ async function reportarEstadoBot(ctx = null) {
         const enPosicion = openPositions.length > 0;
         const activeSymbol = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : "Ninguno";
         
-        let estadoStr = "🔍 Escaneando V5.2 (Trend Reversal)";
+        let estadoStr = "🔍 Escaneando V5.3 (Ghost Mode)";
         if (isBotPaused) estadoStr = "⏸️ PAUSADO";
         const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : estadoStr;
         const emaEstatus = isEmaFilterActive ? "ON 🟢" : "OFF 🔴";
@@ -476,7 +480,7 @@ bot.command('pause', (ctx) => {
 
 bot.command('resume', (ctx) => {
     isBotPaused = false;
-    ctx.reply(`▶️ Bot REANUDADO V5.2.`);
+    ctx.reply(`▶️ Bot REANUDADO V5.3.`);
 });
 
 bot.command('panic', async (ctx) => {
@@ -521,9 +525,9 @@ bot.command('top', async (ctx) => {
 setup();
 setTimeout(() => {
     bot.launch({ dropPendingUpdates: true }).then(() => {
-        console.log("🤖 FastCL V5.2 Trend Reversal Confirmation (Telegram) Init OK.");
+        console.log("🤖 FastCL V5.3 Ghost Mode (Telegram) Init OK.");
     }).catch(err => console.error("❌ Error en Telegram Launch:", err.message));
 }, 5000);
 
-setInterval(tradingLoop, 15000);
+setInterval(tradingLoop, 30000);
 setInterval(() => reportarEstadoBot(), 3600000);
