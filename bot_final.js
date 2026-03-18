@@ -69,7 +69,7 @@ async function ejecutarEntrada(data, marginCalculado) {
 
     if (signalType === 'LONG') {
         globalSLPrice = precioActual - (1.5 * calculatedATR);
-        const msgMargin = isMarginHalved ? "\n⚠️ *Margen Reducido 50% (>20% Drop)*" : "";
+        const msgMargin = isMarginHalved ? "\n⚠️ *Margen Reducido 50% (>20% Variación)*" : "";
         await avisar(`[${symbol}] 🚀 *LONG DETECTADO (V5.2)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (-1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
         try {
             const order = await exchange.createOrder(symbol, 'limit', 'buy', formattedAmount, formattedPrice, { timeInForce: 'GTC' });
@@ -79,7 +79,7 @@ async function ejecutarEntrada(data, marginCalculado) {
         }
     } else {
         globalSLPrice = precioActual + (1.5 * calculatedATR);
-        const msgMargin = isMarginHalved ? "\n⚠️ *Margen Reducido 50% (>20% Drop)*" : "";
+        const msgMargin = isMarginHalved ? "\n⚠️ *Margen Reducido 50% (>20% Variación)*" : "";
         await avisar(`[${symbol}] 📉 *SHORT DETECTADO (V5.2)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (+1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
         try {
             const order = await exchange.createOrder(symbol, 'limit', 'sell', formattedAmount, formattedPrice, { timeInForce: 'GTC' });
@@ -314,10 +314,10 @@ async function tradingLoop() {
                         const atrValues = ATR.calculate({ high: highs, low: lows, close: closes, period: 14 });
                         const calculatedATR = atrValues[atrValues.length - 1] || ((precioActual * 0.01));
 
-                        // 3. Margin Adjustment 20% Drop Protection
+                        // 3. Margin Adjustment 20% Variación Protection (Symmetry)
                         let tradeMargin = marginCalculado;
                         let isMarginHalved = false;
-                        if (allTickers[symbol] && allTickers[symbol].percentage < -20) {
+                        if (allTickers[symbol] && Math.abs(allTickers[symbol].percentage) > 20) {
                             tradeMargin = tradeMargin / 2;
                             isMarginHalved = true;
                         }
@@ -428,6 +428,25 @@ bot.command('testbuy', async (ctx) => {
         await exchange.setMarginMode('ISOLATED', targetSymbol).catch(() => {});
 
         const ticker = await exchange.fetchTicker(targetSymbol);
+        
+        // Verificación de Estructura de Vela para TestBuy
+        const ohlcvTest = await exchange.fetchOHLCV(targetSymbol, '1m', undefined, 2);
+        if (ohlcvTest && ohlcvTest.length >= 2) {
+            const prevCandle = ohlcvTest[0];
+            const currCandle = ohlcvTest[1];
+            const prevHigh = prevCandle[2];
+            const prevLow = prevCandle[3];
+            const currentOpen = currCandle[1];
+            const precioActualTest = ticker.last;
+
+            if (testSideStr === 'LONG' && !(precioActualTest > currentOpen && precioActualTest > prevHigh)) {
+                return ctx.reply(`❌ *TestBuy Rechazado:*\nEstructura de Vela Verde no confirmada para LONG en ${targetSymbol}.`);
+            }
+            if (testSideStr === 'SHORT' && !(precioActualTest < currentOpen && precioActualTest < prevLow)) {
+                return ctx.reply(`❌ *TestBuy Rechazado:*\nEstructura de Vela Roja no confirmada para SHORT en ${targetSymbol}.`);
+            }
+        }
+
         let amount = (marginCalculado * LEVERAGE) / ticker.last;
         let notionalCalculado = amount * ticker.last;
         if (notionalCalculado < 10) amount = 11 / ticker.last;
