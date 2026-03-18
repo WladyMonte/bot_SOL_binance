@@ -7,7 +7,7 @@ const http = require('http');
 // --- SERVIDOR KEEP-ALIVE ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('FastCL V4.4.1 Silent Sniper: Sistema Operativo');
+    res.end('FastCL V4.6 Shark Mode: Sistema Operativo');
 }).listen(process.env.PORT || 3000);
 
 // --- CONFIGURACIÓN TÉCNICA ---
@@ -35,8 +35,8 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🚀 V4.4.1 Silent Sniper - 15s Scan | EMA 50`);
-        await avisar("🔥 *SISTEMA EN LINEA V4.4.1 - Silent Sniper*\nEscaneando Top 10 mercado Futuros por Volumen\nFiltro: RSI 32/68 + EMA50 | Prioridad: Volatilidad 1h > 5%\nObjetivo: +$1.0 / -$0.5");
+        console.log(`🚀 V4.6 Shark Mode - 15s Scan | EMA 50`);
+        await avisar("🔥 *SISTEMA EN LINEA V4.6 - Shark Mode*\nEscaneando Top 30 mercado Futuros por Volumen (>10M)\nFiltro: RSI 32/68 + EMA50 | Prioridad Absoluta: Volatilidad 24h > 10% (Pánico/Euforia)\nObjetivo: +$1.0 / -$0.5");
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
@@ -123,14 +123,14 @@ async function tradingLoop() {
         const allTickers = await exchange.fetchTickers();
         const usdtFutures = Object.keys(exchange.markets).filter(s => {
             const m = exchange.markets[s];
-            return m.active && m.linear && m.quote === 'USDT' && allTickers[s] && allTickers[s].quoteVolume > 15000000;
+            return m.active && m.linear && m.quote === 'USDT' && allTickers[s] && allTickers[s].quoteVolume > 10000000;
         });
 
-        // Ordenamos por volumen para analizar el Top 10
+        // Ordenamos por volumen para analizar el Top 30
         usdtFutures.sort((a, b) => (allTickers[b].quoteVolume || 0) - (allTickers[a].quoteVolume || 0));
         
-        // Limitamos a top 10
-        const topCandidates = usdtFutures.slice(0, 10);
+        // Limitamos a top 30
+        const topCandidates = usdtFutures.slice(0, 30);
         let secondarySignal = null;
         
         let closestSymbol = null;
@@ -151,9 +151,9 @@ async function tradingLoop() {
                 const currentEMA50 = ema50Values[ema50Values.length - 1];
                 const precioActual = closes[closes.length - 1];
 
-                // Movimiento 1h -> comparando precio de hace 60 velas (minutos) con el actual
-                const open1h = ohlcv[250 - 60][1];
-                const move1h = Math.abs((precioActual - open1h) / open1h) * 100;
+                // Verificamos volatilidad de 24h (>10% pánico o euforia)
+                const percentage24h = allTickers[symbol].percentage || 0;
+                const isExtremeVolatility = Math.abs(percentage24h) > 10;
 
                 const tendenciaAlcista = precioActual > currentEMA50;
                 const tendenciaBajista = precioActual < currentEMA50;
@@ -176,14 +176,14 @@ async function tradingLoop() {
                 if (signalType) {
                     const signalData = { symbol, signalType, currentRSI, precioActual, currentEMA50 };
                     
-                    if (move1h > 5) {
-                        // Prioridad Absoluta: El mercado se movió más del 5% en 1h y además hay señal RSI + EMA
-                        console.log(`[ALERTA] Movimiento extremo (>5% en 1h) detectado en ${symbol}! Priorizando orden.`);
+                    if (isExtremeVolatility) {
+                        // Prioridad Absoluta: El mercado tiene una volatilidad 24h > 10% y además hay señal RSI + EMA
+                        console.log(`[ALERTA] Modo Tiburón Activado en ${symbol}! (Cambio 24h: ${percentage24h.toFixed(2)}%). Priorizando orden.`);
                         await ejecutarEntrada(signalData, marginCalculado);
                         console.log(`[LOOP] Escaneo finalizado: ${topCandidates.length} monedas revisadas, 1 señales encontradas.`);
                         return; // Detener flujo para asegurar única posición
                     } else if (!secondarySignal) {
-                        // Guardar la primera señal válida por si ninguna otra tiene >5% de movimiento
+                        // Guardar la primera señal válida por si ninguna otra está en zona de pánico/euforia extrema
                         secondarySignal = signalData;
                     }
                 }
@@ -193,11 +193,11 @@ async function tradingLoop() {
         }
 
         let senalesEncontradas = secondarySignal ? 1 : 0;
-        // Si terminó el escáner del top 10 sin ninguna moneda prioritaria (>5%), ejecuta la mejor señal standard si se encontró
+        // Si terminó el escáner del top 30 sin ninguna moneda prioritaria (>10% 24h), ejecuta la mejor señal standard si se encontró
         if (secondarySignal) {
             await ejecutarEntrada(secondarySignal, marginCalculado);
         } else if (closestSymbol) {
-             const mensajeLog = `V4.4.1 Vigilando 10 monedas... RSI actual en ${closestSymbol}: ${closestRSI.toFixed(2)}`;
+             const mensajeLog = `V4.6 Vigilando 30 monedas... RSI actual en ${closestSymbol}: ${closestRSI.toFixed(2)}`;
              console.log(`[LOOP] ${mensajeLog}`);
         }
 
@@ -224,7 +224,7 @@ async function reportarEstadoBot(ctx = null) {
         const enPosicion = openPositions.length > 0;
         const activeSymbol = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : "Ninguno";
         
-        const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : "🔍 Escaneando V4.4.1 (Silent Sniper)";
+        const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : "🔍 Escaneando V4.6 (Shark Mode)";
 
         const msg = `📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen Próx. Operación: $${marginCalculado.toFixed(2)} USDT\n📈 Estado: ${estadoMsg}\n⚙️ Bot operando a ${LEVERAGE}X GLOBAL\n🎯 TP: $${PROFIT_OBJETIVO} | SL: $${LOSS_LIMITE}`;
         
@@ -286,7 +286,7 @@ bot.command('top', async (ctx) => {
         const allTickers = await exchange.fetchTickers();
         const usdtFutures = Object.keys(exchange.markets).filter(s => {
             const m = exchange.markets[s];
-            return m.active && m.linear && m.quote === 'USDT' && allTickers[s] && allTickers[s].quoteVolume > 15000000;
+            return m.active && m.linear && m.quote === 'USDT' && allTickers[s] && allTickers[s].quoteVolume > 10000000;
         });
 
         usdtFutures.sort((a, b) => (allTickers[b].quoteVolume || 0) - (allTickers[a].quoteVolume || 0));
