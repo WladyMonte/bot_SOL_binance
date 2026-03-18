@@ -41,7 +41,7 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🚀 V5.3 Ghost Mode - 30s Scan`);
+        console.log(`🚀 V5.3 Ghost Mode - 30s Scan | API Protection`);
         await avisar("🔥 *SISTEMA EN LINEA V5.3 - Ghost Mode*\nEscaneando Top 30 mercado Futuros por Volumen (>10M)\nFiltros: VWAP, Triple EMA, OrderBook Flow, RSI(7), Stoch, ATR.\nTP: +$1.0 / SL: 1.5x ATR | Limit GTC (30s timeout)\n\n*COMANDOS DISPONIBLES:*\n📊 /status - Estado actual y balance.\n🏆 /top - Ver las 30 monedas en vigilancia.\n⚡ /toggleema - Activar/Desactivar filtro de tendencia.\n⏸️ /pause / ▶️ /resume - Pausar o reanudar el bot.\n🚨 /panic - Cerrar todo y apagar.\n🧪 /testbuy [MONEDA] [LONG/SHORT] - Operación manual dinámica.");
     } catch (e) { console.error("Error Setup:", e.message); }
 }
@@ -195,10 +195,20 @@ async function tradingLoop() {
         
         for (const symbol of topCandidates) {
             try {
-                // Ghost Mode: Delay de 100ms para no saturar IP
-                await new Promise(r => setTimeout(r, 100));
+                // Ghost Mode: Delay de 200ms para no saturar IP
+                await new Promise(r => setTimeout(r, 200));
 
-                // Fase 1: Filtro Ligero en 1m
+                // Fase 1: Filtro Inteligente (RSI Ligero - Solo 20 velas)
+                const ohlcvLite = await exchange.fetchOHLCV(symbol, '1m', undefined, 20);
+                if (!ohlcvLite || ohlcvLite.length < 15) continue;
+
+                const rsiLiteValues = RSI.calculate({ values: ohlcvLite.map(v => v[4]), period: 14 });
+                const currentRSILite = rsiLiteValues[rsiLiteValues.length - 1];
+
+                // Gate: Solo si el RSI está cerca de zonas de interés (<45 o >55)
+                if (currentRSILite > 45 && currentRSILite < 55) continue;
+
+                // Fase 2: Carga de Datos Completa (Solo para monedas candidatas)
                 const ohlcv = await exchange.fetchOHLCV(symbol, '1m', undefined, 250);
                 if (!ohlcv || ohlcv.length < 250) continue;
 
@@ -246,7 +256,7 @@ async function tradingLoop() {
                 const pre1mLong = currentRSI < RSI_ENTRADA_LONG && tripleEmaLong && rsi7GiroLong && stochGiroLong && candleVerde;
                 const pre1mShort = currentRSI > RSI_ENTRADA_SHORT && tripleEmaShort && rsi7GiroShort && stochGiroShort && candleRoja;
 
-                if (!pre1mLong && !pre1mShort) continue; // Early exit Ghost Mode
+                if (!pre1mLong && !pre1mShort) continue;
 
                 // Fase 2: Confirmación Pesada usando Promise.allSettled
                 const results = await Promise.allSettled([
