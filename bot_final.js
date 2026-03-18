@@ -7,10 +7,12 @@ const http = require('http');
 // --- SERVIDOR KEEP-ALIVE ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('FastCL V4.6 Shark Mode: Sistema Operativo');
+    res.end('FastCL V4.7 Elite Control: Sistema Operativo');
 }).listen(process.env.PORT || 3000);
 
 // --- CONFIGURACIÓN TÉCNICA ---
+let isEmaFilterActive = true;
+let isBotPaused = false;
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const chatId = process.env.TELEGRAM_CHAT_ID;
 const LEVERAGE = 10;            
@@ -35,8 +37,8 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🚀 V4.6 Shark Mode - 15s Scan | EMA 50`);
-        await avisar("🔥 *SISTEMA EN LINEA V4.6 - Shark Mode*\nEscaneando Top 30 mercado Futuros por Volumen (>10M)\nFiltro: RSI 32/68 + EMA50 | Prioridad Absoluta: Volatilidad 24h > 10% (Pánico/Euforia)\nObjetivo: +$1.0 / -$0.5");
+        console.log(`🚀 V4.7 Elite Control - 15s Scan | EMA 50`);
+        await avisar("🔥 *SISTEMA EN LINEA V4.7 - Elite Control*\nEscaneando Top 30 mercado Futuros por Volumen (>10M)\nFiltro: RSI 32/68 (1m & 5m) + EMA50 | Objetivo: +$1.0 / -$0.5\n\n*COMANDOS DISPONIBLES:*\n📊 /status - Estado actual y balance.\n🏆 /top - Ver las 30 monedas en vigilancia.\n⚡ /toggleema - Activar/Desactivar filtro de tendencia.\n⏸️ /pause / ▶️ /resume - Pausar o reanudar el bot.\n🚨 /panic - Cerrar todo y apagar.\n🧪 /testbuy [MONEDA] - Operación de prueba manual.");
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
@@ -76,6 +78,10 @@ async function ejecutarEntrada(data, marginCalculado) {
 
 // --- CORE DEL BOT ---
 async function tradingLoop() {
+    if (isBotPaused) {
+        console.log(`[LOOP] Bot pausado. Ignorando escaneo.`);
+        return;
+    }
     try {
         const positions = await exchange.fetchPositions();
         // Filtrar cualquier posición global con contratos > 0
@@ -142,10 +148,18 @@ async function tradingLoop() {
                 // Obtenemos 250 velas de 1m, lo que cubre ~4h y 10m y sirve para calcular RSI y EMA
                 const ohlcv = await exchange.fetchOHLCV(symbol, '1m', undefined, 250);
                 if (!ohlcv || ohlcv.length < 250) continue;
+                
+                const ohlcv5m = await exchange.fetchOHLCV(symbol, '5m', undefined, 50);
+                if (!ohlcv5m || ohlcv5m.length < 50) continue;
 
                 const closes = ohlcv.map(v => v[4]);
                 const rsiValues = RSI.calculate({ values: closes, period: 14 });
                 const ema50Values = EMA.calculate({ values: closes, period: 50, format: (a) => a });
+
+                const closes5m = ohlcv5m.map(v => v[4]);
+                const rsi5mValues = RSI.calculate({ values: closes5m, period: 14 });
+                const currentRsi5m = rsi5mValues[rsi5mValues.length - 1];
+                const prevRsi5m = rsi5mValues[rsi5mValues.length - 2];
 
                 const currentRSI = rsiValues[rsiValues.length - 1];
                 const currentEMA50 = ema50Values[ema50Values.length - 1];
@@ -155,8 +169,8 @@ async function tradingLoop() {
                 const percentage24h = allTickers[symbol].percentage || 0;
                 const isExtremeVolatility = Math.abs(percentage24h) > 10;
 
-                const tendenciaAlcista = precioActual > currentEMA50;
-                const tendenciaBajista = precioActual < currentEMA50;
+                const tendenciaAlcista = !isEmaFilterActive || precioActual > currentEMA50;
+                const tendenciaBajista = !isEmaFilterActive || precioActual < currentEMA50;
                 
                 // Track Closest RSI
                 const distanceToLong = Math.abs(currentRSI - RSI_ENTRADA_LONG);
@@ -170,8 +184,11 @@ async function tradingLoop() {
                 }
 
                 let signalType = null;
-                if (currentRSI <= RSI_ENTRADA_LONG && tendenciaAlcista) signalType = 'LONG';
-                else if (currentRSI >= RSI_ENTRADA_SHORT && tendenciaBajista) signalType = 'SHORT';
+                const validacionLong5m = currentRsi5m < 40 || currentRsi5m < prevRsi5m;
+                const validacionShort5m = currentRsi5m > 60 || currentRsi5m > prevRsi5m;
+
+                if (currentRSI <= RSI_ENTRADA_LONG && tendenciaAlcista && validacionLong5m) signalType = 'LONG';
+                else if (currentRSI >= RSI_ENTRADA_SHORT && tendenciaBajista && validacionShort5m) signalType = 'SHORT';
 
                 if (signalType) {
                     const signalData = { symbol, signalType, currentRSI, precioActual, currentEMA50 };
@@ -197,7 +214,7 @@ async function tradingLoop() {
         if (secondarySignal) {
             await ejecutarEntrada(secondarySignal, marginCalculado);
         } else if (closestSymbol) {
-             const mensajeLog = `V4.6 Vigilando 30 monedas... RSI actual en ${closestSymbol}: ${closestRSI.toFixed(2)}`;
+             const mensajeLog = `V4.7 Vigilando 30 monedas... RSI actual en ${closestSymbol}: ${closestRSI.toFixed(2)}`;
              console.log(`[LOOP] ${mensajeLog}`);
         }
 
@@ -224,9 +241,12 @@ async function reportarEstadoBot(ctx = null) {
         const enPosicion = openPositions.length > 0;
         const activeSymbol = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : "Ninguno";
         
-        const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : "🔍 Escaneando V4.6 (Shark Mode)";
+        let estadoStr = "🔍 Escaneando V4.7 (Elite)";
+        if (isBotPaused) estadoStr = "⏸️ PAUSADO";
+        const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : estadoStr;
+        const emaEstatus = isEmaFilterActive ? "ON 🟢" : "OFF 🔴";
 
-        const msg = `📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen Próx. Operación: $${marginCalculado.toFixed(2)} USDT\n📈 Estado: ${estadoMsg}\n⚙️ Bot operando a ${LEVERAGE}X GLOBAL\n🎯 TP: $${PROFIT_OBJETIVO} | SL: $${LOSS_LIMITE}`;
+        const msg = `📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen Próx. Operación: $${marginCalculado.toFixed(2)} USDT\n📈 Estado: ${estadoMsg}\n⚙️ Bot operando a ${LEVERAGE}X GLOBAL\n🎯 TP: $${PROFIT_OBJETIVO} | SL: $${LOSS_LIMITE}\n📉 Filtro EMA 50: ${emaEstatus}`;
         
         if (ctx) {
             ctx.reply(msg);
@@ -275,6 +295,45 @@ bot.command('testbuy', async (ctx) => {
     } catch (e) { ctx.reply("❌ Error en test: " + e.message); }
 });
 
+bot.command('toggleema', (ctx) => {
+    isEmaFilterActive = !isEmaFilterActive;
+    ctx.reply(`⚡ Filtro EMA 50 cambiado a: ${isEmaFilterActive ? 'ON 🟢' : 'OFF 🔴'}`);
+});
+
+bot.command('pause', (ctx) => {
+    isBotPaused = true;
+    ctx.reply(`⏸️ Bot PAUSADO. Se detiene el escaneo.`);
+});
+
+bot.command('resume', (ctx) => {
+    isBotPaused = false;
+    ctx.reply(`▶️ Bot REANUDADO. Iniciando escaneo V4.7.`);
+});
+
+bot.command('panic', async (ctx) => {
+    ctx.reply("🚨 PANIC MODE ACTIVADO. Cerrando operaciones globales...");
+    isBotPaused = true;
+    try {
+        const positions = await exchange.fetchPositions();
+        const openPositions = positions.filter(p => Math.abs(Number(p.contracts || p.info?.positionAmt || p.amount || 0)) > 0);
+        if (openPositions.length > 0) {
+            for (const pos of openPositions) {
+                const activeSymbol = pos.symbol || pos.info?.symbol;
+                const contratos = Number(pos.contracts || pos.info?.positionAmt || pos.amount || 0);
+                const lado = contratos > 0 ? 'LONG' : 'SHORT';
+                const sideToClose = lado === 'LONG' ? 'sell' : 'buy';
+                await exchange.createMarketOrder(activeSymbol, sideToClose, Math.abs(contratos), { reduceOnly: true });
+                ctx.reply(`✅ Posición ${lado} de ${activeSymbol} cerrada por PANIC.`);
+            }
+        } else {
+            ctx.reply("No hay operaciones abiertas.");
+        }
+        process.exit(0);
+    } catch (e) {
+        ctx.reply(`❌ Hubo un error en el panic close: ${e.message}`);
+    }
+});
+
 bot.command('stop', (ctx) => {
     ctx.reply("🛑 Deteniendo bot...");
     process.exit(0);
@@ -291,12 +350,12 @@ bot.command('top', async (ctx) => {
 
         usdtFutures.sort((a, b) => (allTickers[b].quoteVolume || 0) - (allTickers[a].quoteVolume || 0));
         
-        const top10 = usdtFutures.slice(0, 10);
-        let msg = "🏆 *Top 10 Monedas por Volumen (Futuros USDT-M):*\n\n";
-        for (let i = 0; i < top10.length; i++) {
-            const s = top10[i];
+        const top30 = usdtFutures.slice(0, 30);
+        let msg = "🏆 *Top 30 Monedas Vigiladas (Futuros USDT-M):*\n\n";
+        for (let i = 0; i < top30.length; i++) {
+            const s = top30[i];
             const t = allTickers[s];
-            msg += `${i+1}. *${s}*\n   Cambio 24h: ${t.percentage ? t.percentage.toFixed(2) : 0}%\n   Volumen: $${(t.quoteVolume / 1000000).toFixed(2)}M\n\n`;
+            msg += `${i+1}. *${s}* | Chg 24h: ${t.percentage ? t.percentage.toFixed(2) : 0}% | Vol: $${(t.quoteVolume / 1000000).toFixed(2)}M\n`;
         }
         ctx.reply(msg, { parse_mode: 'Markdown' });
     } catch (e) {
