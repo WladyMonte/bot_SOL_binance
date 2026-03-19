@@ -22,7 +22,7 @@ const fetchCVDVolume = async (symbol, limit = 2) => {
 // --- SERVIDOR KEEP-ALIVE ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('Jarvis V6.2 | Iron Shield: Online');
+    res.end('Jarvis V6.3 | Stark Resilience: Online');
 }).listen(process.env.PORT || 3000);
 
 // --- CONFIGURACIÓN TÉCNICA ---
@@ -76,8 +76,8 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🧠 V6.2 Iron Shield - [30s Scan] | Mode: ${botMode}`);
-        await avisar(`🦾 *PROTOCOLO JARVIS V6.2: THE IRON SHIELD ACTIVADO*\nCojín de seguridad (60% Margin): *ACTIVO*\nSímbolos Protegidos (cleanSymbol): *ACTIVO*\nRetry de Cierre Forzado: *ARMADO*\nSurvival Mode ($9 limit): *SISTEMA LISTO*`);
+        console.log(`🧠 V6.3 Stark Resilience - [30s Scan] | Mode: ${botMode}`);
+        await avisar(`🦾 *PROTOCOLO JARVIS V6.3: STARK RESILIENCE ACTIVADO*\nCojín de seguridad (30% Margin): *ACTIVO*\nProtocolo Total-Check (Closure): *ACTIVO*\nSímbolos Limpios (cleanSymbol): *BLOQUEADO*\nJarvis is now infalible, señor.`);
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
@@ -106,22 +106,22 @@ async function ejecutarEntrada(data, marginCalculado) {
     if (signalType === 'LONG') {
         globalSLPrice = precioActual - (1.5 * calculatedATR);
         const msgMargin = isMarginHalved ? "\n⚠️ *Margen Reducido 50% (>20% Variación)*" : "";
-        await avisar(`[${symbol}] 🚀 *LONG DETECTADO (V5.4)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (-1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
+        await avisar(`${cleanSymbol(symbol)} 🚀 *LONG DETECTADO (V6.3)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (-1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
         try {
             const order = await exchange.createOrder(symbol, 'limit', 'buy', formattedAmount, formattedPrice, { timeInForce: 'GTC' });
             setTimeout(() => { exchange.cancelOrder(order.id, symbol).catch(() => {}); }, 30000);
         } catch (err) {
-            await avisar(`[${symbol}] ❌ *ERROR ABRIENDO LONG:*\n${err.message}`);
+            await avisar(`${cleanSymbol(symbol)} ❌ *ERROR ABRIENDO LONG:*\n${err.message}`);
         }
     } else {
         globalSLPrice = precioActual + (1.5 * calculatedATR);
         const msgMargin = isMarginHalved ? "\n⚠️ *Margen Reducido 50% (>20% Variación)*" : "";
-        await avisar(`[${symbol}] 📉 *SHORT DETECTADO (V5.4)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (+1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
+        await avisar(`${cleanSymbol(symbol)} 📉 *SHORT DETECTADO (V6.3)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (+1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
         try {
             const order = await exchange.createOrder(symbol, 'limit', 'sell', formattedAmount, formattedPrice, { timeInForce: 'GTC' });
             setTimeout(() => { exchange.cancelOrder(order.id, symbol).catch(() => {}); }, 30000);
         } catch (err) {
-            await avisar(`[${symbol}] ❌ *ERROR ABRIENDO SHORT:*\n${err.message}`);
+            await avisar(`${cleanSymbol(symbol)} ❌ *ERROR ABRIENDO SHORT:*\n${err.message}`);
         }
     }
 }
@@ -203,21 +203,30 @@ async function tradingLoop() {
             if (motivo) {
                 const sideToClose = lado === 'LONG' ? 'sell' : 'buy';
                 try {
-                    await exchange.createMarketOrder(activeSymbol, sideToClose, Math.abs(contratos), { reduceOnly: true });
+                    // Protocolo TOTAL-CHECK: Obtenemos cantidad exacta desde Binance
+                    const updatedPositions = await exchange.fetchPositions();
+                    const currentPos = updatedPositions.find(p => p.symbol === activeSymbol || p.info?.symbol === activeSymbol);
+                    const exactAmount = currentPos ? Math.abs(Number(currentPos.contracts || currentPos.info?.positionAmt || currentPos.amount || 0)) : Math.abs(contratos);
+
+                    await exchange.createMarketOrder(activeSymbol, sideToClose, exactAmount, { reduceOnly: true });
                     globalSLPrice = null;
                     lastClosedProfit = pnlUSD;
                     lastClosedSymbol = activeSymbol;
                     lastClosedTime = Date.now();
-                    await avisar(`[${activeSymbol}] ${motivo}\nCerrado con: $${pnlUSD.toFixed(2)} USD`);
+                    await avisar(`${cleanSymbol(activeSymbol)} ${motivo}\nCerrado con: $${pnlUSD.toFixed(2)} USD`);
                 } catch (err) {
-                    console.error("Fallo cierre 1, reintentando con cleanSymbol...");
+                    console.error("Fallo cierre 1, reintentando con cleanSymbol y Total-Check...");
                     try {
                         const cleaned = cleanSymbol(activeSymbol);
-                        await exchange.createMarketOrder(cleaned, sideToClose, Math.abs(contratos), { reduceOnly: true });
+                        const finalPositions = await exchange.fetchPositions();
+                        const finalPos = finalPositions.find(p => cleanSymbol(p.symbol) === cleaned);
+                        const finalAmount = finalPos ? Math.abs(Number(finalPos.contracts || finalPos.info?.positionAmt || finalPos.amount || 0)) : Math.abs(contratos);
+
+                        await exchange.createMarketOrder(cleaned, sideToClose, finalAmount, { reduceOnly: true });
                         globalSLPrice = null;
-                        await avisar(`[${cleaned}] ✅ *CIERRE FORZADO (REINTENTO) EXITOSO* tras error inicial.`);
+                        await avisar(`${cleaned} ✅ *CIERRE TOTAL-CHECK EXITOSO* tras reintento.`);
                     } catch (retryErr) {
-                        await avisar(`[${activeSymbol}] ❌ *ERROR CRÍTICO CERRANDO POSICIÓN:*\n${retryErr.message}`);
+                        await avisar(`${cleanSymbol(activeSymbol)} ❌ *ERROR CRÍTICO STARK:* ${retryErr.message.substring(0,50)}...`);
                     }
                 }
             }
@@ -237,7 +246,7 @@ async function tradingLoop() {
             currentLeverage = 10;
         }
 
-        let marginCalculado = availableBalance * 0.60;
+        let marginCalculado = availableBalance * 0.30;
         if (marginCalculado > 50) marginCalculado = 50;
         if (marginCalculado < 1) return; // Saldo insuficiente
 
@@ -282,7 +291,7 @@ async function tradingLoop() {
 
                 // Protocolo Centinela (Alertas sin entrada)
                 if (isInstitutionalVol) {
-                    await avisar(`⚠️ *Protocolo Centinela:* [${cleanSymbol(symbol)}] registra volumen institucional masivo (*${momentumFactor.toFixed(1)}x*). Radar activado sobre esta moneda.`);
+                    await avisar(`⚠️ *Protocolo Centinela:* ${cleanSymbol(symbol)} registra volumen institucional masivo (*${momentumFactor.toFixed(1)}x*). Radar activado sobre esta moneda.`);
                 }
 
                 // Gate Zen Oracle: Si no hay volumen explosivo, aplicamos el filtro de RSI
@@ -408,7 +417,7 @@ async function tradingLoop() {
                     const closingJarvis = "\nSigo monitorizando cada latido del Top 30, señor.";
                     
                     if (isInsideBar) {
-                        await avisar(`[${symbol}] ❌ *Señor, BARD fue rechazada.* La vela ${sideWanted === 'LONG' ? 'Verde' : 'Roja'} es un "Inside Bar" (atrapada en el rango anterior). Las ballenas están absorbiendo la liquidez, no hay fuerza real.${closingJarvis}`);
+                        await avisar(`${cleanSymbol(symbol)} ❌ *Señor, BARD fue rechazada.* La vela ${sideWanted === 'LONG' ? 'Verde' : 'Roja'} es un "Inside Bar" (atrapada en el rango anterior). Las ballenas están absorbiendo la liquidez, no hay fuerza real.${closingJarvis}`);
                     }
                 }
 
@@ -426,8 +435,8 @@ async function tradingLoop() {
                     deltaPass = (signalType === 'LONG' && takerBuyVol > takerSellVol) || (signalType === 'SHORT' && takerSellVol > takerBuyVol);
 
                     if (imbalancePass && deltaPass) {
-                         if (isMomentumEntry) await avisar(`🦾 *Jarvis:* [${cleanSymbol(symbol)}] Momentum Spike (${momentumFactor.toFixed(1)}x).`);
-                         else if (isSurfMode) await avisar(`🏄‍♂️ *Jarvis:* [${cleanSymbol(symbol)}] Surfeando ola.`);
+                        if (isMomentumEntry) await avisar(`🦾 *Jarvis:* ${cleanSymbol(symbol)} Momentum Spike (${momentumFactor.toFixed(1)}x).`);
+                        else if (isSurfMode) await avisar(`🏄‍♂️ *Jarvis:* ${cleanSymbol(symbol)} Surfeando ola.`);
 
                         const atr = ATR.calculate({ high: highs, low: lows, close: closes, period: 14 }).pop() || (precioActual * 0.01);
                         await ejecutarEntrada({ symbol, signalType, currentRSI, precioActual, calculatedATR: atr, isMarginHalved: Math.abs(allTickers[symbol].percentage) > 20 }, marginCalculado);
@@ -446,7 +455,7 @@ async function reportarEstadoBot(ctx = null) {
         const balance = await exchange.fetchBalance();
         const availableBalance = balance.free['USDT'] || 0;
         const totalBalance = balance.total['USDT'] || 0;
-        let marginCalculado = availableBalance * 0.60;
+        let marginCalculado = availableBalance * 0.30;
         if (marginCalculado > 50) marginCalculado = 50;
 
         const positions = await exchange.fetchPositions();
@@ -456,12 +465,13 @@ async function reportarEstadoBot(ctx = null) {
         const activeSymbol = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : "Ninguno";
         
         const sentimentStr = marketSentimentRSI > 50 ? "🐂 ALCISTA" : "🐻 BAJISTA";
-        let estadoStr = `🛡️ Jarvis V6.2 Iron Shield (Mode: ${botMode})`;
+        let estadoStr = `🛡️ Jarvis V6.3 Stark Resilience (Mode: ${botMode})`;
         if (isBotPaused) estadoStr = "⏸️ PAUSADO";
-        const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : estadoStr;
+        const cleanedActive = cleanSymbol(activeSymbol);
+        const estadoMsg = enPosicion ? `🟢 Operación Activa en ${cleanedActive}` : estadoStr;
         const emaEstatus = isEmaFilterActive ? "ON 🟢" : "OFF 🔴";
 
-        const msg = `📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen (60%): $${marginCalculado.toFixed(2)} USDT\n📈 Sentimiento: *${sentimentStr}* (RSI Avg: ${marketSentimentRSI.toFixed(1)})\n🧬 Modo Activo: *${botMode}*\n⚙️ Estado: ${estadoMsg}\n🛡️ Apalancamiento: ${currentLeverage}X | Limit GTC\n⚙️ Filtros (VWAP, EMA, Flow): ${emaEstatus}`;
+        const msg = `📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen (30%): $${marginCalculado.toFixed(2)} USDT\n📈 Sentimiento: *${sentimentStr}* (RSI Avg: ${marketSentimentRSI.toFixed(1)})\n🧬 Modo Activo: *${botMode}*\n⚙️ Estado: ${estadoMsg}\n🛡️ Apalancamiento: ${currentLeverage}X | Limit GTC\n⚙️ Filtros (VWAP, EMA, Flow): ${emaEstatus}`;
         
         if (ctx) ctx.reply(msg, { parse_mode: 'Markdown' });
         else await avisar(`⏳ *Heartbeat 1H* ⏳\n${msg}`);
@@ -528,7 +538,7 @@ bot.command('testbuy', async (ctx) => {
 
         const balance = await exchange.fetchBalance();
         const availableBalance = balance.free['USDT'] || 0;
-        let marginCalculado = availableBalance * 0.60;
+        let marginCalculado = availableBalance * 0.30;
         if (marginCalculado > 50) marginCalculado = 50;
 
         await exchange.setLeverage(currentLeverage, targetSymbol).catch(() => {});
@@ -557,13 +567,13 @@ bot.command('testbuy', async (ctx) => {
             const closingJarvis = "\nSigo monitorizando cada latido del mercado, señor. No hay prisa.";
 
             if (testSideStr === 'LONG' && colorVela === 'Roja') {
-                return ctx.reply(`[${targetSymbol}] ❌ *Señor, no voy a dejar que atrapes un cuchillo.*${dataJarvis}\nEl precio sigue cayendo (Vela Roja). Esperaré a que el mercado me confirme un giro con una vela verde.${closingJarvis}`);
+                return ctx.reply(`${finalSymbol} ❌ *Señor, no voy a dejar que atrapes un cuchillo.*${dataJarvis}\nEl precio sigue cayendo (Vela Roja). Esperaré a que el mercado me confirme un giro con una vela verde.${closingJarvis}`);
             }
             if (testSideStr === 'LONG' && isInsideBar) {
-                return ctx.reply(`[${targetSymbol}] ❌ *Señor, BARD fue rechazada.*${dataJarvis}\nLa vela verde es un "Inside Bar" (atrapada en el rango anterior). Las ballenas están absorbiendo la liquidez, no hay fuerza real.${closingJarvis}`);
+                return ctx.reply(`${finalSymbol} ❌ *Señor, BARD fue rechazada.*${dataJarvis}\nLa vela verde es un "Inside Bar" (atrapada en el rango anterior). Las ballenas están absorbiendo la liquidez, no hay fuerza real.${closingJarvis}`);
             }
             if (testSideStr === 'SHORT' && rsi1mActual < 30) {
-                return ctx.reply(`[${targetSymbol}] ❌ *Señor, la moneda ya está muy agotada.*${dataJarvis}\nEl RSI está en ${rsi1mActual.toFixed(1)}. Hacer un Short aquí es lanzarse al vacío. ¡Tranquilo, yo cuido tu balance!${closingJarvis}`);
+                return ctx.reply(`${finalSymbol} ❌ *Señor, la moneda ya está muy agotada.*${dataJarvis}\nEl RSI está en ${rsi1mActual.toFixed(1)}. Hacer un Short aquí es lanzarse al vacío. ¡Tranquilo, yo cuido tu balance!${closingJarvis}`);
             }
         }
 
@@ -577,7 +587,8 @@ bot.command('testbuy', async (ctx) => {
         const order = await exchange.createOrder(targetSymbol, 'limit', testSideStr === 'LONG' ? 'buy' : 'sell', formattedAmount, formattedPrice, { timeInForce: 'GTC' });
         setTimeout(() => { exchange.cancelOrder(order.id, targetSymbol).catch(() => {}); }, 30000);
         
-        ctx.reply(`[${targetSymbol}] 🦾 *Jarvis: Orden de prueba ${testSideStr} ejecutada.*\nMargen base: $${(amount * ticker.last / currentLeverage).toFixed(2)} USD. Apalancamiento: ${currentLeverage}X.`);
+        const finalSymbol = cleanSymbol(targetSymbol);
+        ctx.reply(`${finalSymbol} 🦾 *Jarvis: Orden de prueba ${testSideStr} ejecutada.*\nMargen base: $${(amount * ticker.last / currentLeverage).toFixed(2)} USD. Apalancamiento: ${currentLeverage}X.`);
     } catch (e) { ctx.reply("🤖 Jarvis: Error en telemetría: " + e.message); }
 });
 
@@ -608,7 +619,7 @@ bot.command('pause', (ctx) => {
 
 bot.command('resume', (ctx) => {
     isBotPaused = false;
-    ctx.reply(`▶️ Protocolo Jarvis REANUDADO V6.2 Iron Shield.`);
+    ctx.reply(`▶️ Protocolo Jarvis REANUDADO V6.3 Stark Resilience.`);
 });
 
 bot.command('panic', async (ctx) => {
@@ -653,7 +664,7 @@ bot.command('top', async (ctx) => {
 setup();
 setTimeout(() => {
     bot.launch({ dropPendingUpdates: true }).then(() => {
-        console.log("🤖 FastCL V6.2 Iron Shield (Telegram) Init OK.");
+        console.log("🤖 FastCL V6.3 Stark Resilience (Telegram) Init OK.");
     }).catch(err => console.error("❌ Error en Telegram Launch:", err.message));
 }, 5000);
 
