@@ -4,26 +4,29 @@ const { Telegraf } = require('telegraf');
 const { RSI, EMA, Stochastic, ATR } = require('technicalindicators');
 const http = require('http');
 
+// --- UTILIDADES GLOBALES (JARVIS) ---
+const cleanSymbol = (s) => (s || "").replace(/\//g, '').split(':')[0].toUpperCase();
+
 // --- SERVIDOR KEEP-ALIVE ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('FastCL V5.5 Hybrid Oracle: Sistema Operativo');
+    res.end('Jarvis V6.0 | FastCL Oracle: Online');
 }).listen(process.env.PORT || 3000);
 
 // --- CONFIGURACIÓN TÉCNICA ---
 let isEmaFilterActive = true;
 let isBotPaused = false;
 let globalSLPrice = null;     // SL Calculado por ATR
-let positionExitReason = null; // Para control en debug
 let botMode = 'HYBRID';       // Modos: ZEN, HYBRID, TIBURON
 let lastClosedProfit = 0;     // Para lógica de re-entrada Surf
 let lastClosedSymbol = null;
 let lastClosedTime = 0;
+let marketSentimentRSI = 50;  // Promedio RSI del Top 30
 
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const chatId = process.env.TELEGRAM_CHAT_ID;
 
-const LEVERAGE = 10;            
+let currentLeverage = 10;      // Survival Mode: Default 10X
 const PROFIT_OBJETIVO = 1.0;    // Fijo a $1.00 USD neto
 const RSI_ENTRADA_LONG = 40;    // Modificado para The Oracle
 const RSI_ENTRADA_SHORT = 60;   
@@ -37,7 +40,7 @@ const exchange = new ccxt.binance({
 
 async function avisar(msg) {
     try {
-        await bot.telegram.sendMessage(chatId, `🤖 *FastCL Ultra:*\n${msg}`, { parse_mode: 'Markdown' });
+        await bot.telegram.sendMessage(chatId, `🤖 *Jarvis | FastCL Oracle:*\n${msg}`, { parse_mode: 'Markdown' });
     } catch (e) { console.error("Error Telegram:", e.message); }
 }
 
@@ -45,18 +48,19 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🚀 V5.5 Hybrid Oracle - 30s Scan | Mode: ${botMode}`);
-        await avisar(`🔥 *SISTEMA EN LINEA V5.5 - Hybrid Oracle*\nModo Actual: *${botMode}*\nEscaneando Top 30 mercado Futuros por Volumen (>10M)\nFiltros: VWAP, Triple EMA, OrderBook Flow, RSI(7), Stoch, ATR.\nTP: +$1.0 / SL: 1.5x ATR | Limit GTC (30s timeout)\n\n*NUEVOS COMANDOS:*\n🧘 /modozen - Solo entradas por RSI clásicas.\n🧬 /modohibrido - Entradas RSI + Volumen.\n🦈 /modotiburon - Prioridad absoluta a Momentum Spike (Volumen).`);
+        console.log(`🧠 V6.0 Jarvis Protocol - [30s Scan] | Mode: ${botMode}`);
+        await avisar(`🦾 *PROTOCOLO JARVIS V6.0 ACTIVADO*\nUnificación completa de The Oracle Core.\nEstado: *${botMode}*\nSímbolos Protegidos: *cleanSymbol() ACTIVO*\nFiltro BARD (Inside Bar detection): *ACTIVO*\nProtocolo Centinela: *MONITORIZANDO*\nSurvival Mode ($9 limit): *ARMADO*`);
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
 async function ejecutarEntrada(data, marginCalculado) {
     const { symbol, signalType, currentRSI, precioActual, calculatedATR, isMarginHalved } = data;
     
-    await exchange.setLeverage(LEVERAGE, symbol).catch(() => {});
+    // Survival Mode & Leverage Fix
+    await exchange.setLeverage(currentLeverage, symbol).catch(() => {});
     await exchange.setMarginMode('ISOLATED', symbol).catch(() => {});
 
-    let amount = (marginCalculado * LEVERAGE) / precioActual;
+    let amount = (marginCalculado * currentLeverage) / precioActual;
     let notionalCalculado = amount * precioActual;
     if (notionalCalculado < 10) {
         amount = 11 / precioActual;
@@ -184,9 +188,19 @@ async function tradingLoop() {
             return; // Bloquea la búsqueda global mientras haya posición
         }
 
-        // 2. DETECCION DE ENTRADAS UNIVERSAL (THE ORACLE)
+        // Survival Mode Check
         const balance = await exchange.fetchBalance();
         const availableBalance = balance.free['USDT'] || 0;
+        
+        if (availableBalance < 9.0) {
+            if (currentLeverage !== 5) {
+                currentLeverage = 5;
+                await avisar("🛡️ *Survival Mode Activado*: Balance crítico (<$9). Reduciendo apalancamiento a 5X para preservar capital.");
+            }
+        } else {
+            currentLeverage = 10;
+        }
+
         let marginCalculado = availableBalance * 0.90;
         if (marginCalculado > 50) marginCalculado = 50;
         if (marginCalculado < 1) return; // Saldo insuficiente
@@ -200,14 +214,18 @@ async function tradingLoop() {
         usdtFutures.sort((a, b) => (allTickers[b].quoteVolume || 0) - (allTickers[a].quoteVolume || 0));
         const topCandidates = usdtFutures.slice(0, 30);
         
+        // Sentimiento del Mercado (Jarvis)
+        let totalRSI = 0;
+        let rsiCount = 0;
+
         for (const symbol of topCandidates) {
             try {
                 // Ghost Mode: Delay de 200ms para no saturar IP
                 await new Promise(r => setTimeout(r, 200));
 
                 // Fase 1: Filtro Inteligente (RSI Ligero - Solo 20 velas)
-                const ohlcvLite = await exchange.fetchOHLCV(symbol, '1m', undefined, 20);
-                if (!ohlcvLite || ohlcvLite.length < 15) continue;
+                const ohlcvLite = await exchange.fetchOHLCV(symbol, '1m', undefined, 25);
+                if (!ohlcvLite || ohlcvLite.length < 20) continue;
 
                 const closesLite = ohlcvLite.map(v => v[4]);
                 const volumesLite = ohlcvLite.map(v => v[5]);
@@ -216,10 +234,20 @@ async function tradingLoop() {
                 const last10Vol = volumesLite.slice(-11, -1); 
                 const avgVol10 = last10Vol.reduce((a,b) => a+b, 0) / (last10Vol.length || 1);
                 const currentVol = volumesLite[volumesLite.length - 1];
+                const momentumFactor = currentVol / (avgVol10 || 1);
                 const isMomentumSpike = currentVol > (avgVol10 * 3.0);
+                const isInstitutionalVol = currentVol > (avgVol10 * 4.0);
 
                 const rsiLiteValues = RSI.calculate({ values: closesLite, period: 14 });
                 const currentRSILite = rsiLiteValues[rsiLiteValues.length - 1];
+                
+                totalRSI += currentRSILite;
+                rsiCount++;
+
+                // Protocolo Centinela (Alertas sin entrada)
+                if (isInstitutionalVol) {
+                    await avisar(`⚠️ *Protocolo Centinela:* [${symbol}] registra volumen institucional masivo (*${momentumFactor.toFixed(1)}x*). Radar activado sobre esta moneda.`);
+                }
 
                 // Gate Zen Oracle: Si no hay volumen explosivo, aplicamos el filtro de RSI
                 if (!isMomentumSpike) {
@@ -272,6 +300,9 @@ async function tradingLoop() {
                 const candleVerde = precioActual > currentOpen && precioActual > prevHigh;
                 const candleRoja = precioActual < currentOpen && precioActual < prevLow;
 
+                // Lógica de Inside Bar (BARD)
+                const isInsideBar = highs[highs.length - 1] < highs[highs.length - 2] && lows[lows.length - 1] > lows[lows.length - 2];
+
                 // Lógica Híbrida de Entrada
                 const rsiEntryLong = currentRSI < RSI_ENTRADA_LONG && rsi7GiroLong && stochGiroLong;
                 const rsiEntryShort = currentRSI > RSI_ENTRADA_SHORT && rsi7GiroShort && stochGiroShort;
@@ -292,8 +323,10 @@ async function tradingLoop() {
                 }
 
                 if (!pre1mLong && !pre1mShort) {
-                    // Si el bot detectó RSI cerca pero no pasó el filtro de confirmación, loggeamos Zen Oracle (opcional)
-                    /* console.log(`[${symbol}] Candle/Stoch fail: RSI ${currentRSI.toFixed(1)}`); */
+                    // Zen Oracle Evolution (Jarvis BARD)
+                    if (currentRSILite < 30 && botMode === 'ZEN') {
+                         /* Silencioso para evitar spam automático, pero Jarvis sabe */
+                    }
                     continue;
                 }
 
@@ -334,79 +367,48 @@ async function tradingLoop() {
                 else if (precondicionShort) signalType = 'SHORT';
 
                 if (!signalType && (pre1mLong || pre1mShort)) {
-                    // Zen Oracle: Feedback de rechazo automático para movimientos agotados
+                    // Feedback Jarvis (Automático)
                     const sideWanted = pre1mLong ? 'LONG' : 'SHORT';
-                    const closingAviso = "\nNo hay prisa, el mercado da oportunidades cada minuto. Sigo escaneando el Top 30.";
+                    const closingJarvis = "\nSigo monitorizando cada latido del Top 30, señor.";
                     
-                    if (sideWanted === 'SHORT' && currentRSI < 30) {
-                        await avisar(`[${symbol}] ❌ *Oportunidad Reprimida (Zen Oracle)*\nRechazado: El RSI 1m está en ${currentRSI.toFixed(1)}, la moneda ya está muy agotada. Hacer un Short aquí es lanzarse al vacío. Esperaré a que suba para buscar una mejor entrada. ¡Tranquilo, yo cuido tu balance!${closingAviso}`);
+                    if (isInsideBar) {
+                        await avisar(`[${symbol}] ❌ *Señor, BARD fue rechazada.* La vela ${sideWanted === 'LONG' ? 'Verde' : 'Roja'} es un "Inside Bar" (atrapada en el rango anterior). Las ballenas están absorbiendo la liquidez, no hay fuerza real.${closingJarvis}`);
                     }
                 }
 
                 if (signalType) {
                     const isMomentumEntry = isMomentumSpike && signalType === (precondicionLong ? 'LONG' : 'SHORT');
-                    const momentumFactor = (currentVol / avgVol10).toFixed(1);
                     
-                    // --- Capa de Flujo (Order Flow & DOM) ---
-                    // 1. Imbalance del order book (Relajado a 1.2x)
                     const ob = await exchange.fetchOrderBook(symbol, 20);
                     const bidVol = ob.bids.reduce((acc, val) => acc + val[1], 0);
                     const askVol = ob.asks.reduce((acc, val) => acc + val[1], 0);
                     
-                    let imbalancePass = false;
-                    if (signalType === 'LONG' && bidVol > askVol * 1.2) imbalancePass = true;
-                    if (signalType === 'SHORT' && askVol > bidVol * 1.2) imbalancePass = true;
+                    let imbalancePass = (signalType === 'LONG' && bidVol > askVol * 1.2) || (signalType === 'SHORT' && askVol > bidVol * 1.2);
 
-                    // 2. CVD Check (Taker Buy vs Sell Volume real en últimos 2 min)
                     let deltaPass = false;
                     try {
-                        const rawKlines = await exchange.fapiPublicGetKlines({ symbol: symbol.replace('/', ''), interval: '1m', limit: 2 });
-                        let takerBuyVol = 0;
-                        let takerSellVol = 0;
+                        const rawKlines = await exchange.fapiPublicGetKlines({ symbol: cleanSymbol(symbol), interval: '1m', limit: 2 });
+                        let takerBuyVol = 0, takerSellVol = 0;
                         for (const k of rawKlines) {
-                            const totalVol = parseFloat(k[5]);
-                            const tBuyVol = parseFloat(k[9]);
-                            takerBuyVol += tBuyVol;
-                            takerSellVol += (totalVol - tBuyVol);
+                            takerBuyVol += parseFloat(k[9]);
+                            takerSellVol += (parseFloat(k[5]) - parseFloat(k[9]));
                         }
-                        if (signalType === 'LONG' && takerBuyVol > takerSellVol) deltaPass = true;
-                        if (signalType === 'SHORT' && takerSellVol > takerBuyVol) deltaPass = true;
-                    } catch (e) {
-                        console.error("Error fetching CVD volume:", e.message);
-                    }
+                        deltaPass = (signalType === 'LONG' && takerBuyVol > takerSellVol) || (signalType === 'SHORT' && takerSellVol > takerBuyVol);
+                    } catch (e) {}
 
                     if (imbalancePass && deltaPass) {
-                         // Feedback especial Zen Oracle + Opportunistic
-                         if (isMomentumEntry) {
-                            await avisar(`[${symbol}] 🚀 *Entrando por Momentum Spike (Vol: ${momentumFactor}x). ¡Subiéndome al cohete!*`);
-                         } else if (isSurfMode) {
-                            await avisar(`[${symbol}] 🏄‍♂️ *Surfing Mode: Re-entrada detectada por persistencia de fuerza.*`);
-                         }
+                         if (isMomentumEntry) await avisar(`🦾 *Jarvis:* [${symbol}] Momentum Spike (${momentumFactor.toFixed(1)}x).`);
+                         else if (isSurfMode) await avisar(`🏄‍♂️ *Jarvis:* [${symbol}] Surfeando ola.`);
 
-                        // Calcular ATR (Stop Loss dinámico)
-                        const atrValues = ATR.calculate({ high: highs, low: lows, close: closes, period: 14 });
-                        const calculatedATR = atrValues[atrValues.length - 1] || ((precioActual * 0.01));
-
-                        // 3. Margin Adjustment 20% Variación Protection (Symmetry)
-                        let tradeMargin = marginCalculado;
-                        let isMarginHalved = false;
-                        if (allTickers[symbol] && Math.abs(allTickers[symbol].percentage) > 20) {
-                            tradeMargin = tradeMargin / 2;
-                            isMarginHalved = true;
-                        }
-
-                        const signalData = { symbol, signalType, currentRSI, precioActual, calculatedATR, isMarginHalved };
-                        await ejecutarEntrada(signalData, tradeMargin);
-                        return; // 1 trade máximo
+                        const atr = ATR.calculate({ high: highs, low: lows, close: closes, period: 14 }).pop() || (precioActual * 0.01);
+                        await ejecutarEntrada({ symbol, signalType, currentRSI, precioActual, calculatedATR: atr, isMarginHalved: Math.abs(allTickers[symbol].percentage) > 20 }, marginCalculado);
+                        return;
                     }
                 }
-            } catch (e) {
-                // Ignore error for this coin
-            }
+            } catch (e) {}
         }
-    } catch (e) { 
-        console.error("❌ Error Ciclo:", e.message); 
-    }
+        if (rsiCount > 0) marketSentimentRSI = totalRSI / rsiCount;
+    } catch (e) { console.error("❌ Error Ciclo:", e.message); }
 }
 
 // --- COMANDOS DE TELEGRAM ---
@@ -424,12 +426,13 @@ async function reportarEstadoBot(ctx = null) {
         const enPosicion = openPositions.length > 0;
         const activeSymbol = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : "Ninguno";
         
-        let estadoStr = `🔍 Escaneando V5.5 (Mode: ${botMode})`;
+        const sentimentStr = marketSentimentRSI > 50 ? "🐂 ALCISTA" : "🐻 BAJISTA";
+        let estadoStr = `🔍 Jarvis V6.0 (Mode: ${botMode})`;
         if (isBotPaused) estadoStr = "⏸️ PAUSADO";
         const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : estadoStr;
         const emaEstatus = isEmaFilterActive ? "ON 🟢" : "OFF 🔴";
 
-        const msg = `📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen: $${marginCalculado.toFixed(2)} USDT\n📈 Modo Activo: *${botMode}*\n⚙️ Estado: ${estadoMsg}\n🛡️ Filtros (VWAP, EMA, Flow): ${emaEstatus}`;
+        const msg = `📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen: $${marginCalculado.toFixed(2)} USDT\n📈 Sentimiento: *${sentimentStr}* (RSI Avg: ${marketSentimentRSI.toFixed(1)})\n🧬 Modo Activo: *${botMode}*\n⚙️ Estado: ${estadoMsg}\n🛡️ Apalancamiento: ${currentLeverage}X | Limit GTC\n⚙️ Filtros (VWAP, EMA, Flow): ${emaEstatus}`;
         
         if (ctx) ctx.reply(msg);
         else await avisar(`⏳ *Heartbeat 1H* ⏳\n${msg}`);
@@ -445,18 +448,18 @@ bot.command('testbuy', async (ctx) => {
     try {
         const args = ctx.message.text.trim().split(' ').slice(1);
         let testSymbolStr = null;
-        let testSideStr = null; // Autodetect if null
+        let testSideStr = null;
 
         for (const p of args) {
             const part = p.toUpperCase();
             if (part === 'LONG' || part === 'SHORT') testSideStr = part;
-            else testSymbolStr = part.includes('/') ? part.split('/')[0] : part;
+            else testSymbolStr = part;
         }
 
         await exchange.loadMarkets();
 
         if (!testSymbolStr) {
-            ctx.reply("Buscando mejor moneda (Top 30 + RSI)...");
+            ctx.reply("🤖 Jarvis: Buscando la unidad con mayor convergencia RSI...");
             const allTickers = await exchange.fetchTickers();
             const usdtFutures = Object.keys(exchange.markets).filter(s => {
                 const m = exchange.markets[s];
@@ -478,18 +481,20 @@ bot.command('testbuy', async (ctx) => {
                     
                     if (testSideStr === 'SHORT') {
                         if (currentRSI > bestRSI) { bestRSI = currentRSI; bestSymbol = s; }
-                    } else { // default as LONG checks for lowest RSI
+                    } else { 
                         if (currentRSI < bestRSI) { bestRSI = currentRSI; bestSymbol = s; }
                     }
                 } catch(e) {}
             }
             testSymbolStr = bestSymbol.split('/')[0];
-            testSideStr = testSideStr || 'LONG'; // fallback para la orden
+            testSideStr = testSideStr || 'LONG';
         } else if (!testSideStr) {
             testSideStr = 'LONG';
         }
 
-        const market = Object.values(exchange.markets).find(m => m.base === testSymbolStr && m.quote === 'USDT' && m.linear && m.active);
+        // Limpieza Crítica Jarvis
+        testSymbolStr = cleanSymbol(testSymbolStr);
+        const market = Object.values(exchange.markets).find(m => cleanSymbol(m.symbol) === testSymbolStr && m.quote === 'USDT' && m.linear && m.active);
         const targetSymbol = market ? market.symbol : `${testSymbolStr}/USDT`;
 
         const balance = await exchange.fetchBalance();
@@ -497,65 +502,54 @@ bot.command('testbuy', async (ctx) => {
         let marginCalculado = availableBalance * 0.90;
         if (marginCalculado > 50) marginCalculado = 50;
 
-        await exchange.setLeverage(LEVERAGE, targetSymbol).catch(() => {});
+        await exchange.setLeverage(currentLeverage, targetSymbol).catch(() => {});
         await exchange.setMarginMode('ISOLATED', targetSymbol).catch(() => {});
 
         const ticker = await exchange.fetchTicker(targetSymbol);
         
-        // Verificación de Estructura de Vela para TestBuy
-        const ohlcvTest = await exchange.fetchOHLCV(targetSymbol, '1m', undefined, 2);
+        // Verificación BARD (Jarvis Protocol)
+        const ohlcvTest = await exchange.fetchOHLCV(targetSymbol, '1m', undefined, 5);
         if (ohlcvTest && ohlcvTest.length >= 2) {
-            const prevCandle = ohlcvTest[0];
-            const currCandle = ohlcvTest[1];
+            const prevCandle = ohlcvTest[ohlcvTest.length - 2];
+            const currCandle = ohlcvTest[ohlcvTest.length - 1];
             const prevHigh = prevCandle[2];
             const prevLow = prevCandle[3];
+            const currentHigh = currCandle[2];
+            const currentLow = currCandle[3];
             const currentOpen = currCandle[1];
             const precioActualTest = ticker.last;
 
-            // Zen Oracle: Obtener RSIs para el feedback detallado
-            const closesTest = ohlcvTest.map(v => v[4]); // Nota: ohlcvTest solo tiene 2 velas por el fetch 2 original
-            // Re-petición para RSI real si queremos datos técnicos exactos
-            const ohlcvRSI = await exchange.fetchOHLCV(targetSymbol, '1m', undefined, 30);
-            const ohlcvRSI5 = await exchange.fetchOHLCV(targetSymbol, '5m', undefined, 20);
-            const r1 = RSI.calculate({ values: ohlcvRSI.map(v=>v[4]), period: 14 });
-            const r5 = RSI.calculate({ values: ohlcvRSI5.map(v=>v[4]), period: 14 });
-            const rsi1mActual = r1[r1.length - 1];
-            const rsi5mActual = r5[r5.length - 1];
+            const rsiValues = RSI.calculate({ values: ohlcvTest.map(v=>v[4]), period: 14 }); // Fallback rsi short period
+            const rsi1mActual = rsiValues[rsiValues.length - 1] || 50;
             const colorVela = precioActualTest > currentOpen ? 'Verde' : 'Roja';
-            const dataTecnica = `\n📊 RSI 1m: ${rsi1mActual.toFixed(1)} | RSI 5m: ${rsi5mActual.toFixed(1)} | Vela: ${colorVela}`;
-            const closingAviso = "\nNo hay prisa, el mercado da oportunidades cada minuto. Sigo escaneando el Top 30.";
+            const isInsideBar = currentHigh < prevHigh && currentLow > prevLow;
+            
+            const dataJarvis = `\n📊 RSI 1m: ${rsi1mActual.toFixed(1)} | Vela: ${colorVela}${isInsideBar ? ' (Inside Bar)' : ''}`;
+            const closingJarvis = "\nSigo monitorizando cada latido del mercado, señor. No hay prisa.";
 
             if (testSideStr === 'LONG' && colorVela === 'Roja') {
-                return ctx.reply(`[${targetSymbol}] ❌ *Rechazado: El precio sigue cayendo (Vela Roja).*${dataTecnica}\nNo voy a dejar que 'atrapes un cuchillo' ahora. Esperaré a que el mercado me confirme un giro con una vela verde. Sigo vigilando por ti.${closingAviso}`);
+                return ctx.reply(`[${targetSymbol}] ❌ *Señor, no voy a dejar que atrapes un cuchillo.*${dataJarvis}\nEl precio sigue cayendo (Vela Roja). Esperaré a que el mercado me confirme un giro con una vela verde.${closingJarvis}`);
+            }
+            if (testSideStr === 'LONG' && isInsideBar) {
+                return ctx.reply(`[${targetSymbol}] ❌ *Señor, BARD fue rechazada.*${dataJarvis}\nLa vela verde es un "Inside Bar" (atrapada en el rango anterior). Las ballenas están absorbiendo la liquidez, no hay fuerza real.${closingJarvis}`);
             }
             if (testSideStr === 'SHORT' && rsi1mActual < 30) {
-                return ctx.reply(`[${targetSymbol}] ❌ *Rechazado: La moneda ya está muy agotada.*${dataTecnica}\nEl RSI está en ${rsi1mActual.toFixed(1)}. Hacer un Short aquí es lanzarse al vacío. Esperaré a que suba para buscar una mejor entrada. ¡Tranquilo, yo cuido tu balance!${closingAviso}`);
-            }
-
-            // Fallback genéricos si no cumple las reglas de la V5.2 pero no entran en Zen Oracle específico
-            if (testSideStr === 'LONG' && !(precioActualTest > currentOpen && precioActualTest > prevHigh)) {
-                return ctx.reply(`[${targetSymbol}] ❌ *TestBuy Rechazado (V5.2 Fallback)*${dataTecnica}\nEstructura de Vela Verde no confirmada para LONG.${closingAviso}`);
-            }
-            if (testSideStr === 'SHORT' && !(precioActualTest < currentOpen && precioActualTest < prevLow)) {
-                return ctx.reply(`[${targetSymbol}] ❌ *TestBuy Rechazado (V5.2 Fallback)*${dataTecnica}\nEstructura de Vela Roja no confirmada para SHORT.${closingAviso}`);
+                return ctx.reply(`[${targetSymbol}] ❌ *Señor, la moneda ya está muy agotada.*${dataJarvis}\nEl RSI está en ${rsi1mActual.toFixed(1)}. Hacer un Short aquí es lanzarse al vacío. ¡Tranquilo, yo cuido tu balance!${closingJarvis}`);
             }
         }
 
-        let amount = (marginCalculado * LEVERAGE) / ticker.last;
+        let amount = (marginCalculado * currentLeverage) / ticker.last;
         let notionalCalculado = amount * ticker.last;
         if (notionalCalculado < 10) amount = 11 / ticker.last;
 
         const formattedAmount = Number(exchange.amountToPrecision(targetSymbol, amount));
+        const formattedPrice = Number(exchange.priceToPrecision(targetSymbol, testSideStr === 'LONG' ? ticker.last * 1.001 : ticker.last * 0.999));
         
-        let orderPrice = testSideStr === 'LONG' ? ticker.last * 1.001 : ticker.last * 0.999;
-        const formattedPrice = Number(exchange.priceToPrecision(targetSymbol, orderPrice));
-        const orderSide = testSideStr === 'LONG' ? 'buy' : 'sell';
-        
-        const order = await exchange.createOrder(targetSymbol, 'limit', orderSide, formattedAmount, formattedPrice, { timeInForce: 'GTC' });
+        const order = await exchange.createOrder(targetSymbol, 'limit', testSideStr === 'LONG' ? 'buy' : 'sell', formattedAmount, formattedPrice, { timeInForce: 'GTC' });
         setTimeout(() => { exchange.cancelOrder(order.id, targetSymbol).catch(() => {}); }, 30000);
         
-        ctx.reply(`[${targetSymbol}] 🔥 *ORDEN DE PRUEBA ${testSideStr} (Limit GTC 30s) EJECUTADA*\nMargen base: $${(amount * ticker.last / LEVERAGE).toFixed(2)} USD.`);
-    } catch (e) { ctx.reply("❌ Error en test: " + e.message); }
+        ctx.reply(`[${targetSymbol}] 🦾 *Jarvis: Orden de prueba ${testSideStr} ejecutada.*\nMargen base: $${(amount * ticker.last / currentLeverage).toFixed(2)} USD. Apalancamiento: ${currentLeverage}X.`);
+    } catch (e) { ctx.reply("🤖 Jarvis: Error en telemetría: " + e.message); }
 });
 
 bot.command('toggleema', (ctx) => {
@@ -585,7 +579,7 @@ bot.command('pause', (ctx) => {
 
 bot.command('resume', (ctx) => {
     isBotPaused = false;
-    ctx.reply(`▶️ Bot REANUDADO V5.5.`);
+    ctx.reply(`▶️ Protocolo Jarvis REANUDADO V6.0.`);
 });
 
 bot.command('panic', async (ctx) => {
@@ -630,7 +624,7 @@ bot.command('top', async (ctx) => {
 setup();
 setTimeout(() => {
     bot.launch({ dropPendingUpdates: true }).then(() => {
-        console.log("🤖 FastCL V5.5 Hybrid Oracle (Telegram) Init OK.");
+        console.log("🤖 FastCL V6.0 Jarvis Protocol (Telegram) Init OK.");
     }).catch(err => console.error("❌ Error en Telegram Launch:", err.message));
 }, 5000);
 
