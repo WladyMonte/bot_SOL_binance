@@ -22,7 +22,7 @@ const fetchCVDVolume = async (symbol, limit = 2) => {
 // --- SERVIDOR KEEP-ALIVE ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('Jarvis V7.4 | The Oracle Surge: Online');
+    res.end('Jarvis V7.5 | The Inspector: Online');
 }).listen(process.env.PORT || 3000);
 
 // --- CONFIGURACIÓN TÉCNICA ---
@@ -78,24 +78,27 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        const msg = `🔍 *JARVIS V7.4: ORACLE SURGE & COMPOUND ACTIVADO*\n\n` +
-            `✅ *Estado:* Modo ${botMode}, Apalancamiento ${currentLeverage}x, Margen ${ (marginPercentage * 100).toFixed(0) }%.\n\n` +
-            `📜 *Menú de Comandos:*\n` +
-            `/status | /top | /panic\n` +
-            `/testbuy [SYM] [SIDE] - Orden atómica de prueba.\n` +
-            `/toggleema - Alternar filtros VWAP/EMA.\n` +
-            `/apa5 | /apa10 | /apa20 - Ajustar palanca.\n` +
-            `/margen30 | /margen60 - Ajustar riesgo de balance.\n` +
-            `/modozen | /modohibrido | /modotiburon - Perfiles de caza.\n` +
-            `/pause | /resume - Control de guardia.`;
-        
-        console.log(`🔍 V7.4 | The Oracle Surge - [30s Scan] | Mode: ${botMode}`);
-        await avisar(msg);
+        console.log(`🔍 V7.5 | The Inspector - [30s Scan] | Mode: ${botMode}`);
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
+// V7.5: Mensaje de bienvenida maestro (se envia solo tras confirmar Telegram Init OK)
+async function enviarBienvenida() {
+    const msg = `🔍 *JARVIS V7.5: THE INSPECTOR & COMPOUND ACTIVADO*\n\n` +
+        `✅ *Estado:* Modo ${botMode}, Apalancamiento ${currentLeverage}x, Margen ${ (marginPercentage * 100).toFixed(0) }%.\n\n` +
+        `📜 *Menú de Comandos:*\n` +
+        `/status | /top | /panic\n` +
+        `/testbuy [SYM] [SIDE] - Orden atómica de prueba.\n` +
+        `/toggleema - Alternar filtros VWAP/EMA.\n` +
+        `/apa5 | /apa10 | /apa20 - Ajustar palanca.\n` +
+        `/margen30 | /margen60 - Ajustar riesgo de balance.\n` +
+        `/modozen | /modohibrido | /modotiburon - Perfiles de caza.\n` +
+        `/pause | /resume - Control de guardia.`;
+    await avisar(msg);
+}
+
 // ========================================================
-// V7.3 - STEEL CORE: PROTECCION ATOMICA INSTANTANEA
+// V7.5 - STEEL CORE: PROTECCION ATOMICA INSTANTANEA
 // ========================================================
 async function ejecutarEntrada(data, marginCalculado) {
     const { symbol, signalType, currentRSI, precioActual, calculatedATR } = data;
@@ -128,7 +131,7 @@ async function ejecutarEntrada(data, marginCalculado) {
     const closeSide = signalType === 'LONG' ? 'sell' : 'buy';
 
     const emoji = signalType === 'LONG' ? '🚀 LONG' : '📉 SHORT';
-    await avisar(`${sym} ${emoji} *SEÑAL V7.4*\nRSI: ${currentRSI.toFixed(2)} | Precio: ${precioActual}\nSL: ${formattedSL} | TP: ${formattedTP}`);
+    await avisar(`${sym} ${emoji} *SEÑAL V7.5*\nRSI: ${currentRSI.toFixed(2)} | Precio: ${precioActual}\nSL: ${formattedSL} | TP: ${formattedTP}`);
 
     try {
         // 4. Entrada a MERCADO (instantanea)
@@ -180,7 +183,7 @@ async function ejecutarEntrada(data, marginCalculado) {
         }
 
     } catch (err) {
-        await avisar(`${sym} ❌ *ERROR ENTRADA V7.4:* ${err.message.substring(0, 100)}`);
+        await avisar(`${sym} ❌ *ERROR ENTRADA V7.5:* ${err.message.substring(0, 100)}`);
         exchange.cancelAllOrders(symbol).catch(() => { });
         activeTradeSymbol = null;
         globalSLPrice = null;
@@ -213,26 +216,36 @@ async function tradingLoop() {
 
     try {
         // ====================================================
-        // V7.4 - GARBAGE COLLECTOR SILENCIOSO
-        // Verificamos SOLO el simbolo activo (evita rate limits).
-        // Si hay ordenes abiertas sin posicion -> cancelar.
+        // V7.5 - GARBAGE COLLECTOR GLOBAL (DEEP CLEAN)
+        // Barrido global de ordenes huerfanas de CUALQUIER moneda.
         // ====================================================
         try {
-            // Si tenemos un simbolo activo registrado, verificar sus ordenes
-            if (activeTradeSymbol) {
-                const ordersForSym = await exchange.fetchOpenOrders(activeTradeSymbol);
-                if (ordersForSym.length > 0) {
-                    // Verificar si hay posicion real para ese simbolo
-                    const checkPos = await exchange.fetchPositions([activeTradeSymbol]).catch(() => []);
-                    const hasPosition = checkPos.some(p => Math.abs(Number(p.contracts || p.info?.positionAmt || 0)) > 0);
-                    if (!hasPosition) {
-                        const sym = cleanSymbol(activeTradeSymbol);
-                        console.log(`🗑️ Garbage Collector: limpiando huerfanas de ${sym}`);
-                        await exchange.cancelAllOrders(activeTradeSymbol).catch(() => { });
-                        await avisar(`🗑️ *Garbage Collector:* Huerfanas de ${sym} eliminadas (sin posicion activa).`);
-                        activeTradeSymbol = null;
-                        globalSLPrice = null;
-                        lastEntryTime = 0;
+            const allOpenOrders = await exchange.fetchOpenOrders();
+            if (allOpenOrders.length > 0) {
+                const allPositions = await exchange.fetchPositions().catch(() => []);
+                const activeSymbols = new Set(
+                    allPositions
+                        .filter(p => Math.abs(Number(p.contracts || p.info?.positionAmt || 0)) > 0)
+                        .map(p => p.symbol || p.info?.symbol)
+                );
+                // Agrupar ordenes por simbolo
+                const ordersBySymbol = {};
+                for (const o of allOpenOrders) {
+                    const oSym = o.symbol;
+                    if (!ordersBySymbol[oSym]) ordersBySymbol[oSym] = [];
+                    ordersBySymbol[oSym].push(o);
+                }
+                for (const [oSym, orders] of Object.entries(ordersBySymbol)) {
+                    if (!activeSymbols.has(oSym)) {
+                        const sym = cleanSymbol(oSym);
+                        console.log(`🗑️ Garbage Collector Global: limpiando ${orders.length} huerfanas de ${sym}`);
+                        await exchange.cancelAllOrders(oSym).catch(() => { });
+                        await avisar(`🗑️ *Garbage Collector:* ${orders.length} huerfanas de ${sym} eliminadas (sin posicion activa).`);
+                        if (oSym === activeTradeSymbol) {
+                            activeTradeSymbol = null;
+                            globalSLPrice = null;
+                            lastEntryTime = 0;
+                        }
                     }
                 }
             }
@@ -241,26 +254,34 @@ async function tradingLoop() {
         const positions = await exchange.fetchPositions();
         const openPositions = positions.filter(p => Math.abs(Number(p.contracts || p.info?.positionAmt || p.amount || 0)) > 0);
 
-        // 1. GESTIÓN DE SALIDA 글로벌 
+        // 1. GESTIÓN DE SALIDA
         if (openPositions.length > 0) {
             const pos = openPositions[0];
             const activeSymbol = pos.symbol || (pos.info && pos.info.symbol);
-            const contratos = Number(pos.contracts || pos.info?.positionAmt || pos.amount || 0);
-            const precioEntrada = Number(pos.entryPrice || 0);
-            const lado = contratos > 0 ? 'LONG' : 'SHORT';
-            const sym = cleanSymbol(activeSymbol);
-            const entryTimeRef = lastEntryTime || (Number(pos.timestamp || pos.info?.updateTime || 0));
-
-            // V7.2: Las ordenes SL/TP nativas de Binance manejan todo.
             // Confiamos 100% en Binance. Solo retornamos para bloquear nuevas entradas.
             return; // Posicion activa - SL/TP de Binance al mando
         }
 
-        // Si teniamos una posicion activa pero ya no existe: SL/TP de Binance la cerro
+        // V7.5: Identificacion inteligente de cierre (SL vs TP)
         if (activeTradeSymbol) {
             const sym = cleanSymbol(activeTradeSymbol);
             await exchange.cancelAllOrders(activeTradeSymbol).catch(() => { });
-            await avisar(`${sym} \ud83c\udfc1 *POSICION CERRADA por Binance* (SL/TP nativo ejecutado)\nSistema listo para el siguiente trade, senor.`);
+
+            let closeMsg = `${sym} 🏁 *POSICION CERRADA por Binance*`;
+            try {
+                const lastTrades = await exchange.fetchMyTrades(activeTradeSymbol, undefined, 1);
+                if (lastTrades && lastTrades.length > 0) {
+                    const pnl = parseFloat(lastTrades[lastTrades.length - 1].info?.realizedPnl || 0);
+                    lastClosedProfit = pnl;
+                    if (pnl > 0) {
+                        closeMsg = `${sym} 🏁 *POSICION CERRADA:* ✅ *TAKE PROFIT* (Ganancia: $${pnl.toFixed(2)} USD)`;
+                    } else {
+                        closeMsg = `${sym} 🏁 *POSICION CERRADA:* 🛑 *STOP LOSS* (Proteccion activada)`;
+                    }
+                }
+            } catch (e) { console.error('Error fetching close trade:', e.message); }
+
+            await avisar(`${closeMsg}\nSistema listo para el siguiente trade, senor.`);
             lastClosedSymbol = activeTradeSymbol;
             lastClosedTime = Date.now();
             activeTradeSymbol = null;
@@ -519,13 +540,13 @@ async function reportarEstadoBot(ctx = null) {
         } catch (e) { }
 
         const sentimentStr = marketSentimentRSI > 50 ? "🐂 ALCISTA" : "🐻 BAJISTA";
-        let estadoStr = `🔍 Jarvis V7.4 | The Oracle Surge (Mode: ${botMode})`;
+        let estadoStr = `🔍 Jarvis V7.5 | The Inspector (Mode: ${botMode})`;
         if (isBotPaused) estadoStr = "⏸️ PAUSADO";
         const cleanedActive = hayPosicionReal ? cleanSymbol(activeSymbolStatus) : null;
-        const estadoMsg = hayPosicionReal ? `🟢 Operacion Activa en ${cleanedActive}` : estadoStr.replace('Jarvis V7.4 | The Oracle Surge', 'Escaneando Top 30');
+        const estadoMsg = hayPosicionReal ? `🟢 Operacion Activa en ${cleanedActive}` : estadoStr.replace('Jarvis V7.5 | The Inspector', 'Escaneando Top 30');
         const emaEstatus = isEmaFilterActive ? "ON 🟢" : "OFF 🔴";
 
-        const msg = `🔍 Jarvis V7.4 | Balance: $${totalBalance.toFixed(2)} USDT\n💸 Margen (${(marginPercentage * 100).toFixed(0)}%): $${marginCalculado.toFixed(2)} USDT${pnlStr}\n📈 Sentimiento: *${sentimentStr}* (RSI Avg: ${marketSentimentRSI.toFixed(1)})\n🧬 Modo: *${botMode}*\n⚙️ Estado: ${estadoMsg}\n🛡️ Palanca: ${currentLeverage}X | SL/TP nativos Binance\n⚙️ Filtros (VWAP EMA Flow): ${emaEstatus}`;
+        const msg = `🔍 Jarvis V7.5 | Balance: $${totalBalance.toFixed(2)} USDT\n💸 Margen (${(marginPercentage * 100).toFixed(0)}%): $${marginCalculado.toFixed(2)} USDT${pnlStr}\n📈 Sentimiento: *${sentimentStr}* (RSI Avg: ${marketSentimentRSI.toFixed(1)})\n🧬 Modo: *${botMode}*\n⚙️ Estado: ${estadoMsg}\n🛡️ Palanca: ${currentLeverage}X | SL/TP nativos Binance\n⚙️ Filtros (VWAP EMA Flow): ${emaEstatus}`;
 
         if (ctx) ctx.reply(msg, { parse_mode: 'Markdown' });
         else await avisar(`⏳ *Heartbeat 1H* ⏳\n${msg}`);
@@ -673,7 +694,7 @@ bot.command('pause', (ctx) => {
 
 bot.command('resume', (ctx) => {
     isBotPaused = false;
-    ctx.reply(`▶️ Jarvis V7.4 | The Oracle Surge REANUDADO.`);
+    ctx.reply(`▶️ Jarvis V7.5 | The Inspector REANUDADO.`);
 });
 
 // --- NUEVOS COMANDOS V7.4 ---
@@ -739,8 +760,9 @@ bot.command('top', async (ctx) => {
 
 setup();
 setTimeout(() => {
-    bot.launch({ dropPendingUpdates: true }).then(() => {
-        console.log("🤖 FastCL V7.4 | The Oracle Surge (Telegram) Init OK.");
+    bot.launch({ dropPendingUpdates: true }).then(async () => {
+        console.log("🤖 FastCL V7.5 | The Inspector (Telegram) Init OK.");
+        await enviarBienvenida();
     }).catch(err => console.error("❌ Error en Telegram Launch:", err.message));
 }, 5000);
 
