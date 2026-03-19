@@ -22,7 +22,7 @@ const fetchCVDVolume = async (symbol, limit = 2) => {
 // --- SERVIDOR KEEP-ALIVE ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('Jarvis V7.0 | The Architect: Online');
+    res.end('Jarvis V7.1 | Garbage Collector: Online');
 }).listen(process.env.PORT || 3000);
 
 // --- CONFIGURACIÓN TÉCNICA ---
@@ -185,6 +185,34 @@ async function tradingLoop() {
     if (isBotPaused) return;
 
     try {
+        // ====================================================
+        // V7.1 - GARBAGE COLLECTOR: limpiar ordenes huerfanas
+        // Si hay ordenes abiertas pero NO hay posicion activa
+        // para ese simbolo, las cancelamos automaticamente.
+        // ====================================================
+        try {
+            const openOrders = await exchange.fetchOpenOrders();
+            if (openOrders.length > 0) {
+                const allPositions = await exchange.fetchPositions();
+                const posSymbols = new Set(
+                    allPositions
+                        .filter(p => Math.abs(Number(p.contracts || p.info?.positionAmt || p.amount || 0)) > 0)
+                        .map(p => p.symbol)
+                );
+                // Agrupar ordenes huerfanas por simbolo
+                const orphanSymbols = new Set(
+                    openOrders
+                        .filter(o => !posSymbols.has(o.symbol))
+                        .map(o => o.symbol)
+                );
+                for (const orphanSym of orphanSymbols) {
+                    console.log(`🗑️ Garbage Collector: cancelando ordenes huerfanas de ${cleanSymbol(orphanSym)}`);
+                    await exchange.cancelAllOrders(orphanSym).catch(() => {});
+                    await avisar(`🗑️ *Garbage Collector:* Ordenes huerfanas de ${cleanSymbol(orphanSym)} canceladas. No habia posicion activa.`);
+                }
+            }
+        } catch (gcErr) { console.error('Garbage Collector error:', gcErr.message); }
+
         const positions = await exchange.fetchPositions();
         const openPositions = positions.filter(p => Math.abs(Number(p.contracts || p.info?.positionAmt || p.amount || 0)) > 0);
 
@@ -483,15 +511,30 @@ async function reportarEstadoBot(ctx = null) {
         
         const enPosicion = openPositions.length > 0;
         const activeSymbol = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : "Ninguno";
+
+        // V7.1: PNL real de trades cerrados en las ultimas 4 horas
+        let sessionPnl = 0;
+        let pnlStr = "";
+        try {
+            const since = Date.now() - (4 * 60 * 60 * 1000);
+            const myTrades = await exchange.fetchMyTrades(undefined, since, 50);
+            for (const t of myTrades) {
+                if (t.info && t.info.realizedPnl) {
+                    sessionPnl += parseFloat(t.info.realizedPnl);
+                }
+            }
+            const pnlEmoji = sessionPnl >= 0 ? '🟢' : '🔴';
+            pnlStr = `\n${pnlEmoji} PNL (4h sesion): *$${sessionPnl.toFixed(3)} USD*`;
+        } catch (e) {}
         
         const sentimentStr = marketSentimentRSI > 50 ? "🐂 ALCISTA" : "🐻 BAJISTA";
-        let estadoStr = `🏛️ Jarvis V7.0 The Architect (Mode: ${botMode})`;
+        let estadoStr = `🏛️ Jarvis V7.1 Garbage Collector (Mode: ${botMode})`;
         if (isBotPaused) estadoStr = "⏸️ PAUSADO";
         const cleanedActive = cleanSymbol(activeSymbol);
-        const estadoMsg = enPosicion ? `🟢 Operación Activa en ${cleanedActive}` : estadoStr;
+        const estadoMsg = enPosicion ? `🟢 Operacion Activa en ${cleanedActive}` : estadoStr;
         const emaEstatus = isEmaFilterActive ? "ON 🟢" : "OFF 🔴";
 
-        const msg = `🏛️ Jarvis V7.0 The Architect | Balance: $${totalBalance.toFixed(2)} USDT\n💸 Margen (30%): $${marginCalculado.toFixed(2)} USDT\n📈 Sentimiento: *${sentimentStr}* (RSI Avg: ${marketSentimentRSI.toFixed(1)})\n🧬 Modo: *${botMode}*\n⚙️ Estado: ${estadoMsg}\n🛡️ Palanca: ${currentLeverage}X | Ordenes nativas SL/TP en Binance\n⚙️ Filtros (VWAP EMA Flow): ${emaEstatus}`;
+        const msg = `🏛️ Jarvis V7.1 | Balance: $${totalBalance.toFixed(2)} USDT\n💸 Margen (30%): $${marginCalculado.toFixed(2)} USDT${pnlStr}\n📈 Sentimiento: *${sentimentStr}* (RSI Avg: ${marketSentimentRSI.toFixed(1)})\n🧬 Modo: *${botMode}*\n⚙️ Estado: ${estadoMsg}\n🛡️ Palanca: ${currentLeverage}X | SL/TP nativos Binance\n⚙️ Filtros (VWAP EMA Flow): ${emaEstatus}`;
         
         if (ctx) ctx.reply(msg, { parse_mode: 'Markdown' });
         else await avisar(`⏳ *Heartbeat 1H* ⏳\n${msg}`);
@@ -639,7 +682,7 @@ bot.command('pause', (ctx) => {
 
 bot.command('resume', (ctx) => {
     isBotPaused = false;
-    ctx.reply(`▶️ Jarvis V7.0 The Architect REANUDADO. Ordenes nativas activas.`);
+    ctx.reply(`▶️ Jarvis V7.1 Garbage Collector REANUDADO.`);
 });
 
 bot.command('panic', async (ctx) => {
@@ -684,7 +727,7 @@ bot.command('top', async (ctx) => {
 setup();
 setTimeout(() => {
     bot.launch({ dropPendingUpdates: true }).then(() => {
-        console.log("🤖 FastCL V7.0 The Architect (Telegram) Init OK.");
+        console.log("🤖 FastCL V7.1 Garbage Collector (Telegram) Init OK.");
     }).catch(err => console.error("❌ Error en Telegram Launch:", err.message));
 }, 5000);
 
