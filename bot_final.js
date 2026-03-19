@@ -2,7 +2,8 @@ require('dotenv').config();
 const ccxt = require('ccxt');
 const { Telegraf } = require('telegraf');
 const { RSI, EMA, Stochastic, ATR } = require('technicalindicators');
-const http = require('http');
+const express = require('express');
+const app = express();
 
 // --- UTILIDADES GLOBALES (JARVIS) ---
 const cleanSymbol = (s) => (s || "").replace(/\//g, '').split(':')[0].toUpperCase();
@@ -19,11 +20,9 @@ const fetchCVDVolume = async (symbol, limit = 2) => {
     } catch (e) { return { takerBuyVol: 0, takerSellVol: 0 }; }
 };
 
-// --- SERVIDOR KEEP-ALIVE ---
-http.createServer((req, res) => {
-    res.writeHead(200);
-    res.end('Jarvis V7.6 | The Cleaner: Online');
-}).listen(process.env.PORT || 3000);
+// --- KEEP-ALIVE REACTOR (HEALTH CHECK) ---
+app.get('/', (req, res) => res.send('Jarvis V7.7 Online'));
+app.listen(process.env.PORT || 3000, () => console.log('✅ Keep-Alive Reactor: Online (GET /)'));
 
 // --- CONFIGURACIÓN TÉCNICA ---
 let isEmaFilterActive = true;
@@ -36,16 +35,28 @@ let lastClosedTime = 0;
 let marketSentimentRSI = 50;    // Promedio RSI del Top 30
 let activeTradeSymbol = null;   // Símbolo de la posición activa (V7.0)
 let lastEntryTime = 0;          // Timestamp de entrada (V7.0 failsafe)
-let lastGlobalGC = 0;           // V7.6: Timestamp del ultimo barrido global GC
+let lastGlobalGC = 0;           // V7.7: Timestamp del ultimo barrido global GC
 
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const chatId = process.env.TELEGRAM_CHAT_ID;
 
 let currentLeverage = 10;      // Survival Mode: Default 10X
-let marginPercentage = 0.30;    // Configurable margin percentage (Default 30%)
+let marginPercentage = 0.30;    // V7.7: Global Scope Fixed
 const RSI_ENTRADA_LONG = 40;    // Modificado para The Oracle
 const RSI_ENTRADA_SHORT = 60;
 const TIME_LIMIT_MS = 5 * 60 * 1000; // Límite de 5 min para trades
+
+// V7.7: Welcome Message Template (Global Scope)
+const welcomeMsg = '🔍 JARVIS V7.7: THE AUDITOR ACTIVADO\n\n' +
+    'Reactor estable en Railway. Health Check OK.\n\n' +
+    'Menu de Comandos:\n' +
+    '/status | /top | /panic\n' +
+    '/testbuy [SYM] [SIDE] - Orden atomica de prueba.\n' +
+    '/toggleema - Alternar filtros VWAP/EMA.\n' +
+    '/apa5 | /apa10 | /apa20 - Ajustar palanca.\n' +
+    '/margen30 | /margen60 - Ajustar riesgo de balance.\n' +
+    '/modozen | /modohibrido | /modotiburon - Perfiles de caza.\n' +
+    '/pause | /resume - Control de guardia.';
 
 const exchange = new ccxt.binance({
     apiKey: process.env.API_KEY,
@@ -82,25 +93,15 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🔍 V7.6 | The Cleaner - [30s Scan] | Mode: ${botMode}`);
+        console.log(`🔍 V7.7 | The Auditor - [30s Scan] | Mode: ${botMode}`);
         console.log('✅ Mercados cargados correctamente.');
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
-// V7.6: Mensaje de bienvenida maestro (se envia SOLO tras confirmar Telegram Init OK)
+// V7.7: Mensaje de bienvenida maestro
 async function enviarBienvenida() {
-    const msg = '🔍 JARVIS V7.6: THE CLEANER & COMPOUND ACTIVADO\n\n' +
-        `Estado: Modo ${botMode}, Apalancamiento ${currentLeverage}x, Margen ${(marginPercentage * 100).toFixed(0)}%.\n\n` +
-        'Menu de Comandos:\n' +
-        '/status | /top | /panic\n' +
-        '/testbuy [SYM] [SIDE] - Orden atomica de prueba.\n' +
-        '/toggleema - Alternar filtros VWAP/EMA.\n' +
-        '/apa5 | /apa10 | /apa20 - Ajustar palanca.\n' +
-        '/margen30 | /margen60 - Ajustar riesgo de balance.\n' +
-        '/modozen | /modohibrido | /modotiburon - Perfiles de caza.\n' +
-        '/pause | /resume - Control de guardia.';
     try {
-        await bot.telegram.sendMessage(chatId, msg);
+        await bot.telegram.sendMessage(chatId, welcomeMsg);
         console.log('✅ Mensaje de bienvenida enviado a Telegram.');
     } catch (e) {
         console.error('❌ Error enviando bienvenida a Telegram:', e.message);
@@ -108,7 +109,7 @@ async function enviarBienvenida() {
 }
 
 // ========================================================
-// V7.6 - STEEL CORE: PROTECCION ATOMICA INSTANTANEA
+// V7.7 - STEEL CORE: PROTECCION ATOMICA INSTANTANEA
 // ========================================================
 async function ejecutarEntrada(data, marginCalculado) {
     const { symbol, signalType, currentRSI, precioActual, calculatedATR } = data;
@@ -141,7 +142,7 @@ async function ejecutarEntrada(data, marginCalculado) {
     const closeSide = signalType === 'LONG' ? 'sell' : 'buy';
 
     const emoji = signalType === 'LONG' ? '🚀 LONG' : '📉 SHORT';
-    await avisar(`${sym} ${emoji} *SEÑAL V7.6*\nRSI: ${currentRSI.toFixed(2)} | Precio: ${precioActual}\nSL: ${formattedSL} | TP: ${formattedTP}`);
+    await avisar(`${sym} ${emoji} *SEÑAL V7.7*\nRSI: ${currentRSI.toFixed(2)} | Precio: ${precioActual}\nSL: ${formattedSL} | TP: ${formattedTP}`);
 
     try {
         // 4. Entrada a MERCADO (instantanea)
@@ -193,7 +194,7 @@ async function ejecutarEntrada(data, marginCalculado) {
         }
 
     } catch (err) {
-        await avisar(`${sym} ❌ *ERROR ENTRADA V7.6:* ${err.message.substring(0, 100)}`);
+        await avisar(`${sym} ❌ *ERROR ENTRADA V7.7:* ${err.message.substring(0, 100)}`);
         exchange.cancelAllOrders(symbol).catch(() => { });
         activeTradeSymbol = null;
         globalSLPrice = null;
@@ -226,7 +227,7 @@ async function tradingLoop() {
 
     try {
         // ====================================================
-        // V7.6 - GARBAGE COLLECTOR GLOBAL (DEEP CLEAN)
+        // V7.7 - GARBAGE COLLECTOR GLOBAL (DEEP CLEAN)
         // Barrido global cada 10 min para no saturar API.
         // ====================================================
         const GC_INTERVAL_MS = 10 * 60 * 1000; // 10 minutos
@@ -275,7 +276,7 @@ async function tradingLoop() {
             return; // Posicion activa - SL/TP de Binance al mando
         }
 
-        // V7.6: Identificacion inteligente de cierre (SL vs TP)
+        // V7.7: Identificacion inteligente de cierre (SL vs TP)
         if (activeTradeSymbol) {
             const sym = cleanSymbol(activeTradeSymbol);
             await exchange.cancelAllOrders(activeTradeSymbol).catch(() => { });
@@ -553,13 +554,13 @@ async function reportarEstadoBot(ctx = null) {
         } catch (e) { }
 
         const sentimentStr = marketSentimentRSI > 50 ? "🐂 ALCISTA" : "🐻 BAJISTA";
-        let estadoStr = `🔍 Jarvis V7.6 | The Cleaner (Mode: ${botMode})`;
+        let estadoStr = `🔍 Jarvis V7.7 | The Auditor (Mode: ${botMode})`;
         if (isBotPaused) estadoStr = "⏸️ PAUSADO";
         const cleanedActive = hayPosicionReal ? cleanSymbol(activeSymbolStatus) : null;
-        const estadoMsg = hayPosicionReal ? `🟢 Operacion Activa en ${cleanedActive}` : estadoStr.replace('Jarvis V7.6 | The Cleaner', 'Escaneando Top 30');
+        const estadoMsg = hayPosicionReal ? `🟢 Operacion Activa en ${cleanedActive}` : estadoStr.replace('Jarvis V7.7 | The Auditor', 'Escaneando Top 30');
         const emaEstatus = isEmaFilterActive ? "ON 🟢" : "OFF 🔴";
 
-        const msg = `🔍 Jarvis V7.6 | Balance: $${totalBalance.toFixed(2)} USDT\n💸 Margen (${(marginPercentage * 100).toFixed(0)}%): $${marginCalculado.toFixed(2)} USDT${pnlStr}\n📈 Sentimiento: *${sentimentStr}* (RSI Avg: ${marketSentimentRSI.toFixed(1)})\n🧬 Modo: *${botMode}*\n⚙️ Estado: ${estadoMsg}\n🛡️ Palanca: ${currentLeverage}X | SL/TP nativos Binance\n⚙️ Filtros (VWAP EMA Flow): ${emaEstatus}`;
+        const msg = `🔍 Jarvis V7.7 | Balance: $${totalBalance.toFixed(2)} USDT\n💸 Margen (${(marginPercentage * 100).toFixed(0)}%): $${marginCalculado.toFixed(2)} USDT${pnlStr}\n📈 Sentimiento: *${sentimentStr}* (RSI Avg: ${marketSentimentRSI.toFixed(1)})\n🧬 Modo: *${botMode}*\n⚙️ Estado: ${estadoMsg}\n🛡️ Palanca: ${currentLeverage}X | SL/TP nativos Binance\n⚙️ Filtros (VWAP EMA Flow): ${emaEstatus}`;
 
         if (ctx) ctx.reply(msg, { parse_mode: 'Markdown' });
         else await avisar(`⏳ *Heartbeat 1H* ⏳\n${msg}`);
@@ -572,6 +573,8 @@ async function reportarEstadoBot(ctx = null) {
 bot.command('status', async (ctx) => { await reportarEstadoBot(ctx); });
 
 bot.command('testbuy', async (ctx) => {
+    let targetSymbol = null;
+    let finalSymbol = null;
     try {
         const args = ctx.message.text.trim().split(' ').slice(1);
         let testSymbolStr = null;
@@ -622,8 +625,8 @@ bot.command('testbuy', async (ctx) => {
         // Limpieza Crítica Jarvis
         testSymbolStr = cleanSymbol(testSymbolStr);
         const market = Object.values(exchange.markets).find(m => cleanSymbol(m.symbol) === testSymbolStr && m.quote === 'USDT' && m.linear && m.active);
-        const targetSymbol = market ? market.symbol : `${testSymbolStr}/USDT`;
-        const finalSymbol = cleanSymbol(targetSymbol);
+        targetSymbol = market ? market.symbol : `${testSymbolStr}/USDT`;
+        finalSymbol = cleanSymbol(targetSymbol);
 
         const balance = await exchange.fetchBalance();
         const availableBalance = balance.free['USDT'] || 0;
@@ -707,7 +710,7 @@ bot.command('pause', (ctx) => {
 
 bot.command('resume', (ctx) => {
     isBotPaused = false;
-    ctx.reply(`▶️ Jarvis V7.6 | The Cleaner REANUDADO.`);
+    ctx.reply(`▶️ Jarvis V7.7 | The Auditor REANUDADO.`);
 });
 
 // --- COMANDOS DE RIESGO V7.6 ---
@@ -771,13 +774,28 @@ bot.command('top', async (ctx) => {
     } catch (e) { ctx.reply("❌ Error: " + e.message); }
 });
 
-setup();
-setTimeout(() => {
-    bot.launch({ dropPendingUpdates: true }).then(async () => {
-        console.log('🤖 FastCL V7.6 | The Cleaner (Telegram) Init OK.');
-        await enviarBienvenida();
-    }).catch(err => console.error('❌ Error en Telegram Launch:', err.message));
-}, 5000);
+// --- ARRANQUE SECUENCIAL RESILIENTE ---
+(async () => {
+    try {
+        // 1. Setup de Mercados
+        await setup();
 
-setInterval(tradingLoop, 30000);
-setInterval(() => reportarEstadoBot(), 3600000);
+        // 2. Lanzamiento de Telegram (No bloqueante en caso de error)
+        bot.launch({ dropPendingUpdates: true })
+            .then(async () => {
+                console.log('🤖 FastCL V7.7 | The Auditor (Telegram) Init OK.');
+                await enviarBienvenida();
+            })
+            .catch(err => {
+                console.error('⚠️ Error en Lanzamiento de Telegram:', err.message);
+                console.log('🚀 El reactor continuara operando sin Telegram.');
+            });
+
+        // 3. Loops de Operacion
+        setInterval(tradingLoop, 30000);
+        setInterval(() => reportarEstadoBot(), 3600000);
+
+    } catch (criticalErr) {
+        console.error('💣 ERROR CRITICO EN EL REACTOR:', criticalErr.message);
+    }
+})();
