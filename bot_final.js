@@ -6,11 +6,23 @@ const http = require('http');
 
 // --- UTILIDADES GLOBALES (JARVIS) ---
 const cleanSymbol = (s) => (s || "").replace(/\//g, '').split(':')[0].toUpperCase();
+const fetchCVDVolume = async (symbol, limit = 2) => {
+    try {
+        const cleaned = cleanSymbol(symbol);
+        const rawKlines = await exchange.fapiPublicGetKlines({ symbol: cleaned, interval: '1m', limit });
+        let takerBuyVol = 0, takerSellVol = 0;
+        for (const k of rawKlines) {
+            takerBuyVol += parseFloat(k[9]);
+            takerSellVol += (parseFloat(k[5]) - parseFloat(k[9]));
+        }
+        return { takerBuyVol, takerSellVol };
+    } catch (e) { return { takerBuyVol: 0, takerSellVol: 0 }; }
+};
 
 // --- SERVIDOR KEEP-ALIVE ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('Jarvis V6.0 | FastCL Oracle: Online');
+    res.end('Jarvis V6.1 | FastCL Optimizer: Online');
 }).listen(process.env.PORT || 3000);
 
 // --- CONFIGURACIÓN TÉCNICA ---
@@ -48,8 +60,8 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🧠 V6.0 Jarvis Protocol - [30s Scan] | Mode: ${botMode}`);
-        await avisar(`🦾 *PROTOCOLO JARVIS V6.0 ACTIVADO*\nUnificación completa de The Oracle Core.\nEstado: *${botMode}*\nSímbolos Protegidos: *cleanSymbol() ACTIVO*\nFiltro BARD (Inside Bar detection): *ACTIVO*\nProtocolo Centinela: *MONITORIZANDO*\nSurvival Mode ($9 limit): *ARMADO*`);
+        console.log(`🧠 V6.1 Jarvis Optimizer - [30s Scan] | Mode: ${botMode}`);
+        await avisar(`🦾 *PROTOCOLO JARVIS V6.1 ACTIVADO*\nCojín de seguridad (70% Margin): *ACTIVO*\nSímbolos Protegidos (fetchCVDVolume): *ACTIVO*\nFiltro BARD (Inside Bar detection): *ACTIVO*\nSurvival Mode ($9 limit): *ARMADO*`);
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
@@ -201,7 +213,7 @@ async function tradingLoop() {
             currentLeverage = 10;
         }
 
-        let marginCalculado = availableBalance * 0.90;
+        let marginCalculado = availableBalance * 0.70;
         if (marginCalculado > 50) marginCalculado = 50;
         if (marginCalculado < 1) return; // Saldo insuficiente
 
@@ -246,7 +258,7 @@ async function tradingLoop() {
 
                 // Protocolo Centinela (Alertas sin entrada)
                 if (isInstitutionalVol) {
-                    await avisar(`⚠️ *Protocolo Centinela:* [${symbol}] registra volumen institucional masivo (*${momentumFactor.toFixed(1)}x*). Radar activado sobre esta moneda.`);
+                    await avisar(`⚠️ *Protocolo Centinela:* [${cleanSymbol(symbol)}] registra volumen institucional masivo (*${momentumFactor.toFixed(1)}x*). Radar activado sobre esta moneda.`);
                 }
 
                 // Gate Zen Oracle: Si no hay volumen explosivo, aplicamos el filtro de RSI
@@ -386,19 +398,12 @@ async function tradingLoop() {
                     let imbalancePass = (signalType === 'LONG' && bidVol > askVol * 1.2) || (signalType === 'SHORT' && askVol > bidVol * 1.2);
 
                     let deltaPass = false;
-                    try {
-                        const rawKlines = await exchange.fapiPublicGetKlines({ symbol: cleanSymbol(symbol), interval: '1m', limit: 2 });
-                        let takerBuyVol = 0, takerSellVol = 0;
-                        for (const k of rawKlines) {
-                            takerBuyVol += parseFloat(k[9]);
-                            takerSellVol += (parseFloat(k[5]) - parseFloat(k[9]));
-                        }
-                        deltaPass = (signalType === 'LONG' && takerBuyVol > takerSellVol) || (signalType === 'SHORT' && takerSellVol > takerBuyVol);
-                    } catch (e) {}
+                    const { takerBuyVol, takerSellVol } = await fetchCVDVolume(symbol, 2);
+                    deltaPass = (signalType === 'LONG' && takerBuyVol > takerSellVol) || (signalType === 'SHORT' && takerSellVol > takerBuyVol);
 
                     if (imbalancePass && deltaPass) {
-                         if (isMomentumEntry) await avisar(`🦾 *Jarvis:* [${symbol}] Momentum Spike (${momentumFactor.toFixed(1)}x).`);
-                         else if (isSurfMode) await avisar(`🏄‍♂️ *Jarvis:* [${symbol}] Surfeando ola.`);
+                         if (isMomentumEntry) await avisar(`🦾 *Jarvis:* [${cleanSymbol(symbol)}] Momentum Spike (${momentumFactor.toFixed(1)}x).`);
+                         else if (isSurfMode) await avisar(`🏄‍♂️ *Jarvis:* [${cleanSymbol(symbol)}] Surfeando ola.`);
 
                         const atr = ATR.calculate({ high: highs, low: lows, close: closes, period: 14 }).pop() || (precioActual * 0.01);
                         await ejecutarEntrada({ symbol, signalType, currentRSI, precioActual, calculatedATR: atr, isMarginHalved: Math.abs(allTickers[symbol].percentage) > 20 }, marginCalculado);
@@ -417,7 +422,7 @@ async function reportarEstadoBot(ctx = null) {
         const balance = await exchange.fetchBalance();
         const availableBalance = balance.free['USDT'] || 0;
         const totalBalance = balance.total['USDT'] || 0;
-        let marginCalculado = availableBalance * 0.90;
+        let marginCalculado = availableBalance * 0.70;
         if (marginCalculado > 50) marginCalculado = 50;
 
         const positions = await exchange.fetchPositions();
@@ -427,7 +432,7 @@ async function reportarEstadoBot(ctx = null) {
         const activeSymbol = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : "Ninguno";
         
         const sentimentStr = marketSentimentRSI > 50 ? "🐂 ALCISTA" : "🐻 BAJISTA";
-        let estadoStr = `🔍 Jarvis V6.0 (Mode: ${botMode})`;
+        let estadoStr = `🔍 Jarvis V6.1 (Mode: ${botMode})`;
         if (isBotPaused) estadoStr = "⏸️ PAUSADO";
         const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : estadoStr;
         const emaEstatus = isEmaFilterActive ? "ON 🟢" : "OFF 🔴";
@@ -499,7 +504,7 @@ bot.command('testbuy', async (ctx) => {
 
         const balance = await exchange.fetchBalance();
         const availableBalance = balance.free['USDT'] || 0;
-        let marginCalculado = availableBalance * 0.90;
+        let marginCalculado = availableBalance * 0.70;
         if (marginCalculado > 50) marginCalculado = 50;
 
         await exchange.setLeverage(currentLeverage, targetSymbol).catch(() => {});
@@ -579,7 +584,7 @@ bot.command('pause', (ctx) => {
 
 bot.command('resume', (ctx) => {
     isBotPaused = false;
-    ctx.reply(`▶️ Protocolo Jarvis REANUDADO V6.0.`);
+    ctx.reply(`▶️ Protocolo Jarvis REANUDADO V6.1.`);
 });
 
 bot.command('panic', async (ctx) => {
@@ -624,7 +629,7 @@ bot.command('top', async (ctx) => {
 setup();
 setTimeout(() => {
     bot.launch({ dropPendingUpdates: true }).then(() => {
-        console.log("🤖 FastCL V6.0 Jarvis Protocol (Telegram) Init OK.");
+        console.log("🤖 FastCL V6.1 Jarvis Optimizer (Telegram) Init OK.");
     }).catch(err => console.error("❌ Error en Telegram Launch:", err.message));
 }, 5000);
 
