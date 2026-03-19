@@ -22,7 +22,7 @@ const fetchCVDVolume = async (symbol, limit = 2) => {
 // --- SERVIDOR KEEP-ALIVE ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('Jarvis V7.1 | Garbage Collector: Online');
+    res.end('Jarvis V7.2 | Silent Sentinel: Online');
 }).listen(process.env.PORT || 3000);
 
 // --- CONFIGURACIÓN TÉCNICA ---
@@ -78,8 +78,8 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🏛️ V7.0 The Architect - [30s Scan] | Mode: ${botMode}`);
-        await avisar(`🏛️ *PROTOCOLO JARVIS V7.0: THE ARCHITECT ACTIVADO*\nOrden Atomica (MARKET + SL + TP nativos): *ONLINE*\nMargen Conservador (30%): *ACTIVO*\nCancelacion Automatica de Ordenes Contrarias: *ONLINE*\nJarvis es indestructible ahora, señor.`);
+        console.log(`🔍 V7.2 Silent Sentinel - [30s Scan] | Mode: ${botMode}`);
+        await avisar(`🔍 *PROTOCOLO JARVIS V7.2: SILENT SENTINEL*\nGarbage Collector Silencioso (por simbolo): *ACTIVO*\nSL/TP nativos Binance: *CONFIANZA TOTAL*\nJarvis opera en silencio absoluto, senor.`);
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
@@ -186,29 +186,27 @@ async function tradingLoop() {
 
     try {
         // ====================================================
-        // V7.1 - GARBAGE COLLECTOR: limpiar ordenes huerfanas
-        // Si hay ordenes abiertas pero NO hay posicion activa
-        // para ese simbolo, las cancelamos automaticamente.
+        // V7.2 - GARBAGE COLLECTOR SILENCIOSO
+        // Verificamos SOLO el simbolo activo (evita rate limits).
+        // Si hay ordenes abiertas sin posicion -> cancelar.
         // ====================================================
         try {
-            const openOrders = await exchange.fetchOpenOrders();
-            if (openOrders.length > 0) {
-                const allPositions = await exchange.fetchPositions();
-                const posSymbols = new Set(
-                    allPositions
-                        .filter(p => Math.abs(Number(p.contracts || p.info?.positionAmt || p.amount || 0)) > 0)
-                        .map(p => p.symbol)
-                );
-                // Agrupar ordenes huerfanas por simbolo
-                const orphanSymbols = new Set(
-                    openOrders
-                        .filter(o => !posSymbols.has(o.symbol))
-                        .map(o => o.symbol)
-                );
-                for (const orphanSym of orphanSymbols) {
-                    console.log(`🗑️ Garbage Collector: cancelando ordenes huerfanas de ${cleanSymbol(orphanSym)}`);
-                    await exchange.cancelAllOrders(orphanSym).catch(() => {});
-                    await avisar(`🗑️ *Garbage Collector:* Ordenes huerfanas de ${cleanSymbol(orphanSym)} canceladas. No habia posicion activa.`);
+            // Si tenemos un simbolo activo registrado, verificar sus ordenes
+            if (activeTradeSymbol) {
+                const ordersForSym = await exchange.fetchOpenOrders(activeTradeSymbol);
+                if (ordersForSym.length > 0) {
+                    // Verificar si hay posicion real para ese simbolo
+                    const checkPos = await exchange.fetchPositions([activeTradeSymbol]).catch(() => []);
+                    const hasPosition = checkPos.some(p => Math.abs(Number(p.contracts || p.info?.positionAmt || 0)) > 0);
+                    if (!hasPosition) {
+                        const sym = cleanSymbol(activeTradeSymbol);
+                        console.log(`🗑️ Garbage Collector: limpiando huerfanas de ${sym}`);
+                        await exchange.cancelAllOrders(activeTradeSymbol).catch(() => {});
+                        await avisar(`🗑️ *Garbage Collector:* Huerfanas de ${sym} eliminadas (sin posicion activa).`);
+                        activeTradeSymbol = null;
+                        globalSLPrice = null;
+                        lastEntryTime = 0;
+                    }
                 }
             }
         } catch (gcErr) { console.error('Garbage Collector error:', gcErr.message); }
@@ -226,47 +224,9 @@ async function tradingLoop() {
             const sym = cleanSymbol(activeSymbol);
             const entryTimeRef = lastEntryTime || (Number(pos.timestamp || pos.info?.updateTime || 0));
 
-            // V7.0: Las ordenes SL/TP nativas de Binance manejan la salida principal.
-            // Aqui solo vigilamos por si el exchange ya cerro la posicion,
-            // o si el failsafe de 5 minutos debe actuar.
-
-            const ticker = await exchange.fetchTicker(activeSymbol);
-            const precioActual = ticker.last;
-            let pnlUSD = (precioActual - precioEntrada) * contratos;
-            if (lado === 'SHORT') pnlUSD = (precioEntrada - precioActual) * Math.abs(contratos);
-
-            // Failsafe de tiempo: 5 minutos sin que SL/TP firme = cierre manual de emergencia
-            const timeOpenMs = entryTimeRef > 0 ? Date.now() - entryTimeRef : 0;
-            if (timeOpenMs > TIME_LIMIT_MS && timeOpenMs < TIME_LIMIT_MS * 2) {
-                const motivoTime = pnlUSD > 0
-                    ? "⏱️ FAILSAFE 5m (asegurando ganancia)"
-                    : "⏱️ FAILSAFE 5m (cerrando antes de mayor perdida)";
-
-                // Cancelar ordenes pendientes de SL/TP en Binance
-                await exchange.cancelAllOrders(activeSymbol).catch(() => {});
-                await new Promise(r => setTimeout(r, 800));
-
-                // Cierre de emergencia con Total-Check
-                const freshPos = await exchange.fetchPositions();
-                const fPos = freshPos.find(p => p.symbol === activeSymbol || cleanSymbol(p.symbol) === sym);
-                const failAmt = fPos ? Math.abs(Number(fPos.contracts || fPos.info?.positionAmt || 0)) : Math.abs(contratos);
-                if (failAmt > 0) {
-                    const sideToClose = lado === 'LONG' ? 'sell' : 'buy';
-                    await exchange.createMarketOrder(activeSymbol, sideToClose, failAmt, { reduceOnly: true })
-                        .catch(async (e) => {
-                            const cleaned = cleanSymbol(activeSymbol);
-                            await exchange.createMarketOrder(cleaned, sideToClose, failAmt, { reduceOnly: true }).catch(() => {});
-                        });
-                    globalSLPrice = null;
-                    activeTradeSymbol = null;
-                    lastEntryTime = 0;
-                    lastClosedProfit = pnlUSD;
-                    lastClosedSymbol = activeSymbol;
-                    lastClosedTime = Date.now();
-                    await avisar(`${sym} ${motivoTime}\nCerrado emergencia: $${pnlUSD.toFixed(2)} USD`);
-                }
-            }
-            return; // Posicion aun activa, SL/TP de Binance la controlan
+            // V7.2: Las ordenes SL/TP nativas de Binance manejan todo.
+            // Confiamos 100% en Binance. Solo retornamos para bloquear nuevas entradas.
+            return; // Posicion activa - SL/TP de Binance al mando
         }
 
         // Si teniamos una posicion activa pero ya no existe: SL/TP de Binance la cerro
@@ -510,7 +470,11 @@ async function reportarEstadoBot(ctx = null) {
         const openPositions = positions.filter(p => Math.abs(Number(p.contracts || p.info?.positionAmt || p.amount || 0)) > 0);
         
         const enPosicion = openPositions.length > 0;
-        const activeSymbol = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : "Ninguno";
+        const activeSymbolStatus = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : null;
+        
+        // V7.2: Solo reportar operacion activa si fetchPositions confirma cantidad real
+        const posAmt = enPosicion ? Math.abs(Number(openPositions[0].contracts || openPositions[0].info?.positionAmt || 0)) : 0;
+        const hayPosicionReal = enPosicion && posAmt > 0;
 
         // V7.1: PNL real de trades cerrados en las ultimas 4 horas
         let sessionPnl = 0;
@@ -528,13 +492,13 @@ async function reportarEstadoBot(ctx = null) {
         } catch (e) {}
         
         const sentimentStr = marketSentimentRSI > 50 ? "🐂 ALCISTA" : "🐻 BAJISTA";
-        let estadoStr = `🏛️ Jarvis V7.1 Garbage Collector (Mode: ${botMode})`;
+        let estadoStr = `🔍 Jarvis V7.2 Silent Sentinel (Mode: ${botMode})`;
         if (isBotPaused) estadoStr = "⏸️ PAUSADO";
-        const cleanedActive = cleanSymbol(activeSymbol);
-        const estadoMsg = enPosicion ? `🟢 Operacion Activa en ${cleanedActive}` : estadoStr;
+        const cleanedActive = hayPosicionReal ? cleanSymbol(activeSymbolStatus) : null;
+        const estadoMsg = hayPosicionReal ? `🟢 Operacion Activa en ${cleanedActive}` : estadoStr.replace('Jarvis V7.2 Silent Sentinel', 'Escaneando Top 30');
         const emaEstatus = isEmaFilterActive ? "ON 🟢" : "OFF 🔴";
 
-        const msg = `🏛️ Jarvis V7.1 | Balance: $${totalBalance.toFixed(2)} USDT\n💸 Margen (30%): $${marginCalculado.toFixed(2)} USDT${pnlStr}\n📈 Sentimiento: *${sentimentStr}* (RSI Avg: ${marketSentimentRSI.toFixed(1)})\n🧬 Modo: *${botMode}*\n⚙️ Estado: ${estadoMsg}\n🛡️ Palanca: ${currentLeverage}X | SL/TP nativos Binance\n⚙️ Filtros (VWAP EMA Flow): ${emaEstatus}`;
+        const msg = `🔍 Jarvis V7.2 | Balance: $${totalBalance.toFixed(2)} USDT\n💸 Margen (30%): $${marginCalculado.toFixed(2)} USDT${pnlStr}\n📈 Sentimiento: *${sentimentStr}* (RSI Avg: ${marketSentimentRSI.toFixed(1)})\n🧬 Modo: *${botMode}*\n⚙️ Estado: ${estadoMsg}\n🛡️ Palanca: ${currentLeverage}X | SL/TP nativos Binance\n⚙️ Filtros (VWAP EMA Flow): ${emaEstatus}`;
         
         if (ctx) ctx.reply(msg, { parse_mode: 'Markdown' });
         else await avisar(`⏳ *Heartbeat 1H* ⏳\n${msg}`);
@@ -682,7 +646,7 @@ bot.command('pause', (ctx) => {
 
 bot.command('resume', (ctx) => {
     isBotPaused = false;
-    ctx.reply(`▶️ Jarvis V7.1 Garbage Collector REANUDADO.`);
+    ctx.reply(`▶️ Jarvis V7.2 Silent Sentinel REANUDADO.`);
 });
 
 bot.command('panic', async (ctx) => {
@@ -727,7 +691,7 @@ bot.command('top', async (ctx) => {
 setup();
 setTimeout(() => {
     bot.launch({ dropPendingUpdates: true }).then(() => {
-        console.log("🤖 FastCL V7.1 Garbage Collector (Telegram) Init OK.");
+        console.log("🤖 FastCL V7.2 Silent Sentinel (Telegram) Init OK.");
     }).catch(err => console.error("❌ Error en Telegram Launch:", err.message));
 }, 5000);
 
