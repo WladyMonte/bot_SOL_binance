@@ -22,7 +22,7 @@ const fetchCVDVolume = async (symbol, limit = 2) => {
 // --- SERVIDOR KEEP-ALIVE ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('Jarvis V6.1 | FastCL Optimizer: Online');
+    res.end('Jarvis V6.2 | Iron Shield: Online');
 }).listen(process.env.PORT || 3000);
 
 // --- CONFIGURACIÓN TÉCNICA ---
@@ -52,7 +52,23 @@ const exchange = new ccxt.binance({
 
 async function avisar(msg) {
     try {
-        await bot.telegram.sendMessage(chatId, `🤖 *Jarvis | FastCL Oracle:*\n${msg}`, { parse_mode: 'Markdown' });
+        // Sanitización básica para evitar errores de parseo en Telegram (Markdown V1)
+        // Escapamos caracteres que suelen romper el formato si no están balanceados
+        const sanitizedMsg = msg.replace(/([_*\[`])/g, (match, p1) => {
+            // Si el mensaje ya parece estar usando balanceo (p.ej. *texto*), lo dejamos pasar?
+            // No, mejor escapamos todo lo que no sea explícitamente controlado.
+            // Pero como 'msg' ya viene con asteriscos, vamos a ser selectivos.
+            return match; 
+        });
+        
+        // El error 'can't parse entities' suele ser por corchetes [ o asteriscos * huérfanos.
+        // Reintentamos sin Markdown si falla.
+        await bot.telegram.sendMessage(chatId, `🤖 *Jarvis | FastCL Oracle:*\n${msg}`, { parse_mode: 'Markdown' })
+            .catch(async (err) => {
+                if (err.message.includes('bad request') || err.message.includes('entities')) {
+                    await bot.telegram.sendMessage(chatId, `🤖 Jarvis | FastCL Oracle:\n${msg.replace(/[*_`\[]/g, '')}`);
+                }
+            });
     } catch (e) { console.error("Error Telegram:", e.message); }
 }
 
@@ -60,8 +76,8 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🧠 V6.1 Jarvis Optimizer - [30s Scan] | Mode: ${botMode}`);
-        await avisar(`🦾 *PROTOCOLO JARVIS V6.1 ACTIVADO*\nCojín de seguridad (70% Margin): *ACTIVO*\nSímbolos Protegidos (fetchCVDVolume): *ACTIVO*\nFiltro BARD (Inside Bar detection): *ACTIVO*\nSurvival Mode ($9 limit): *ARMADO*`);
+        console.log(`🧠 V6.2 Iron Shield - [30s Scan] | Mode: ${botMode}`);
+        await avisar(`🦾 *PROTOCOLO JARVIS V6.2: THE IRON SHIELD ACTIVADO*\nCojín de seguridad (60% Margin): *ACTIVO*\nSímbolos Protegidos (cleanSymbol): *ACTIVO*\nRetry de Cierre Forzado: *ARMADO*\nSurvival Mode ($9 limit): *SISTEMA LISTO*`);
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
@@ -194,7 +210,15 @@ async function tradingLoop() {
                     lastClosedTime = Date.now();
                     await avisar(`[${activeSymbol}] ${motivo}\nCerrado con: $${pnlUSD.toFixed(2)} USD`);
                 } catch (err) {
-                    await avisar(`[${activeSymbol}] ❌ *ERROR CERRANDO POSICIÓN:*\n${err.message}`);
+                    console.error("Fallo cierre 1, reintentando con cleanSymbol...");
+                    try {
+                        const cleaned = cleanSymbol(activeSymbol);
+                        await exchange.createMarketOrder(cleaned, sideToClose, Math.abs(contratos), { reduceOnly: true });
+                        globalSLPrice = null;
+                        await avisar(`[${cleaned}] ✅ *CIERRE FORZADO (REINTENTO) EXITOSO* tras error inicial.`);
+                    } catch (retryErr) {
+                        await avisar(`[${activeSymbol}] ❌ *ERROR CRÍTICO CERRANDO POSICIÓN:*\n${retryErr.message}`);
+                    }
                 }
             }
             return; // Bloquea la búsqueda global mientras haya posición
@@ -213,7 +237,7 @@ async function tradingLoop() {
             currentLeverage = 10;
         }
 
-        let marginCalculado = availableBalance * 0.70;
+        let marginCalculado = availableBalance * 0.60;
         if (marginCalculado > 50) marginCalculado = 50;
         if (marginCalculado < 1) return; // Saldo insuficiente
 
@@ -422,7 +446,7 @@ async function reportarEstadoBot(ctx = null) {
         const balance = await exchange.fetchBalance();
         const availableBalance = balance.free['USDT'] || 0;
         const totalBalance = balance.total['USDT'] || 0;
-        let marginCalculado = availableBalance * 0.70;
+        let marginCalculado = availableBalance * 0.60;
         if (marginCalculado > 50) marginCalculado = 50;
 
         const positions = await exchange.fetchPositions();
@@ -432,14 +456,14 @@ async function reportarEstadoBot(ctx = null) {
         const activeSymbol = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : "Ninguno";
         
         const sentimentStr = marketSentimentRSI > 50 ? "🐂 ALCISTA" : "🐻 BAJISTA";
-        let estadoStr = `🔍 Jarvis V6.1 (Mode: ${botMode})`;
+        let estadoStr = `🛡️ Jarvis V6.2 Iron Shield (Mode: ${botMode})`;
         if (isBotPaused) estadoStr = "⏸️ PAUSADO";
         const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : estadoStr;
         const emaEstatus = isEmaFilterActive ? "ON 🟢" : "OFF 🔴";
 
-        const msg = `📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen: $${marginCalculado.toFixed(2)} USDT\n📈 Sentimiento: *${sentimentStr}* (RSI Avg: ${marketSentimentRSI.toFixed(1)})\n🧬 Modo Activo: *${botMode}*\n⚙️ Estado: ${estadoMsg}\n🛡️ Apalancamiento: ${currentLeverage}X | Limit GTC\n⚙️ Filtros (VWAP, EMA, Flow): ${emaEstatus}`;
+        const msg = `📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen (60%): $${marginCalculado.toFixed(2)} USDT\n📈 Sentimiento: *${sentimentStr}* (RSI Avg: ${marketSentimentRSI.toFixed(1)})\n🧬 Modo Activo: *${botMode}*\n⚙️ Estado: ${estadoMsg}\n🛡️ Apalancamiento: ${currentLeverage}X | Limit GTC\n⚙️ Filtros (VWAP, EMA, Flow): ${emaEstatus}`;
         
-        if (ctx) ctx.reply(msg);
+        if (ctx) ctx.reply(msg, { parse_mode: 'Markdown' });
         else await avisar(`⏳ *Heartbeat 1H* ⏳\n${msg}`);
 
     } catch (e) { 
@@ -504,7 +528,7 @@ bot.command('testbuy', async (ctx) => {
 
         const balance = await exchange.fetchBalance();
         const availableBalance = balance.free['USDT'] || 0;
-        let marginCalculado = availableBalance * 0.70;
+        let marginCalculado = availableBalance * 0.60;
         if (marginCalculado > 50) marginCalculado = 50;
 
         await exchange.setLeverage(currentLeverage, targetSymbol).catch(() => {});
@@ -584,7 +608,7 @@ bot.command('pause', (ctx) => {
 
 bot.command('resume', (ctx) => {
     isBotPaused = false;
-    ctx.reply(`▶️ Protocolo Jarvis REANUDADO V6.1.`);
+    ctx.reply(`▶️ Protocolo Jarvis REANUDADO V6.2 Iron Shield.`);
 });
 
 bot.command('panic', async (ctx) => {
@@ -629,7 +653,7 @@ bot.command('top', async (ctx) => {
 setup();
 setTimeout(() => {
     bot.launch({ dropPendingUpdates: true }).then(() => {
-        console.log("🤖 FastCL V6.1 Jarvis Optimizer (Telegram) Init OK.");
+        console.log("🤖 FastCL V6.2 Iron Shield (Telegram) Init OK.");
     }).catch(err => console.error("❌ Error en Telegram Launch:", err.message));
 }, 5000);
 
