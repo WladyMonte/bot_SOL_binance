@@ -84,7 +84,7 @@ async function setup() {
 }
 
 // ========================================================
-// V7.0 - ARQUITECTURA DE ORDENES ATOMICAS (THE ARCHITECT)
+// V7.3 - STEEL CORE: PROTECCION ATOMICA INSTANTANEA
 // ========================================================
 async function ejecutarEntrada(data, marginCalculado) {
     const { symbol, signalType, currentRSI, precioActual, calculatedATR } = data;
@@ -94,16 +94,15 @@ async function ejecutarEntrada(data, marginCalculado) {
     await exchange.setLeverage(currentLeverage, symbol).catch(() => {});
     await exchange.setMarginMode('ISOLATED', symbol).catch(() => {});
 
-    // 2. Calcular cantidad
+    // 2. Calcular cantidad con precision exacta (sin esperas, sin re-fetch)
     let amount = (marginCalculado * currentLeverage) / precioActual;
     if ((amount * precioActual) < 10) amount = 11 / precioActual;
     const formattedAmount = Number(exchange.amountToPrecision(symbol, amount));
 
-    // 3. Calcular precios de SL y TP
+    // 3. Calcular SL y TP
     const rawSL = signalType === 'LONG'
         ? precioActual - (1.5 * calculatedATR)
         : precioActual + (1.5 * calculatedATR);
-    // TP: precio que genera $1 USD neto sobre el amount
     const tpDelta = PROFIT_OBJETIVO / formattedAmount;
     const rawTP = signalType === 'LONG'
         ? precioActual + tpDelta
@@ -111,55 +110,69 @@ async function ejecutarEntrada(data, marginCalculado) {
 
     const formattedSL = Number(exchange.priceToPrecision(symbol, rawSL));
     const formattedTP = Number(exchange.priceToPrecision(symbol, rawTP));
-    const entrySide   = signalType === 'LONG' ? 'buy'  : 'sell';
-    const closeSide   = signalType === 'LONG' ? 'sell' : 'buy';
+    const entrySide = signalType === 'LONG' ? 'buy'  : 'sell';
+    const closeSide = signalType === 'LONG' ? 'sell' : 'buy';
 
     const emoji = signalType === 'LONG' ? '🚀 LONG' : '📉 SHORT';
-    await avisar(`${sym} ${emoji} *SEÑAL V7.0*\nRSI: ${currentRSI.toFixed(2)} | Precio: ${precioActual}\nSL: ${formattedSL} | TP: ${formattedTP}`);
+    await avisar(`${sym} ${emoji} *SEÑAL V7.3*\nRSI: ${currentRSI.toFixed(2)} | Precio: ${precioActual}\nSL: ${formattedSL} | TP: ${formattedTP}`);
 
     try {
-        // 4. Orden de entrada a MERCADO (instantánea)
+        // 4. Entrada a MERCADO (instantanea)
         await exchange.createMarketOrder(symbol, entrySide, formattedAmount);
 
-        // 5. Esperar 1.5s para que Binance registre la posición
-        await new Promise(r => setTimeout(r, 1500));
-
-        // 6. Re-leer cantidad exacta del exchange (Total-Check)
-        const updatedPos = await exchange.fetchPositions();
-        const myPos = updatedPos.find(p =>
-            (p.symbol === symbol || cleanSymbol(p.symbol) === sym) &&
-            Math.abs(Number(p.contracts || p.info?.positionAmt || 0)) > 0
-        );
-        const exactAmount = myPos
-            ? Math.abs(Number(myPos.contracts || myPos.info?.positionAmt || 0))
-            : formattedAmount;
-
-        // 7. STOP LOSS nativo en Binance (STOP_MARKET + reduceOnly)
-        await exchange.createOrder(symbol, 'stop_market', closeSide, exactAmount, undefined, {
-            stopPrice: formattedSL,
-            reduceOnly: true
-        });
-
-        // 8. TAKE PROFIT nativo en Binance (TAKE_PROFIT_MARKET + reduceOnly)
-        await exchange.createOrder(symbol, 'take_profit_market', closeSide, exactAmount, undefined, {
-            stopPrice: formattedTP,
-            reduceOnly: true
-        });
-
-        // 9. Guardar estado activo
+        // 5. Guardar estado inmediatamente despues de la entrada
         globalSLPrice     = formattedSL;
         activeTradeSymbol = symbol;
         lastEntryTime     = Date.now();
         lastClosedSymbol  = null;
 
-        await avisar(`${sym} ✅ *POSICION ABIERTA + SL/TP EN BINANCE*\nAmt: ${exactAmount} | SL: ${formattedSL} | TP: ${formattedTP}\nLas ordenes estan visibles en tu panel de Binance, señor.`);
+        // 6. STEEL CORE: Colocacion atomica de SL/TP con retry loop (3 intentos)
+        const MAX_RETRIES = 3;
+        let slOk = false;
+        let tpOk = false;
+
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            if (!slOk) {
+                try {
+                    await exchange.createOrder(symbol, 'stop_market', closeSide, formattedAmount, undefined, {
+                        stopPrice: formattedSL,
+                        reduceOnly: true
+                    });
+                    slOk = true;
+                } catch (e) {
+                    console.error(`SL intento ${attempt} fallido: ${e.message}`);
+                }
+            }
+            if (!tpOk) {
+                try {
+                    await exchange.createOrder(symbol, 'take_profit_market', closeSide, formattedAmount, undefined, {
+                        stopPrice: formattedTP,
+                        reduceOnly: true
+                    });
+                    tpOk = true;
+                } catch (e) {
+                    console.error(`TP intento ${attempt} fallido: ${e.message}`);
+                }
+            }
+            if (slOk && tpOk) break;
+            if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, 500));
+        }
+
+        if (slOk && tpOk) {
+            await avisar(`${sym} ✅ *STEEL CORE ACTIVO*\nAmt: ${formattedAmount} | SL: ${formattedSL} | TP: ${formattedTP}\nProteccion blindada en Binance, senor.`);
+        } else {
+            const fallo = (!slOk ? 'SL ' : '') + (!tpOk ? 'TP' : '');
+            await avisar(`${sym} ⚠️ *STEEL CORE PARCIAL - REVISION URGENTE*\nFalllo colocar: ${fallo.trim()}\nSL: ${formattedSL} | TP: ${formattedTP}\nRevisa el panel de Binance manualmente.`);
+        }
 
     } catch (err) {
-        await avisar(`${sym} ❌ *ERROR ARQUITECTO:* ${err.message.substring(0, 100)}`);
-        // Intentar cancelar ordenes huerfanas
+        await avisar(`${sym} ❌ *ERROR ENTRADA V7.3:* ${err.message.substring(0, 100)}`);
         exchange.cancelAllOrders(symbol).catch(() => {});
+        activeTradeSymbol = null;
+        globalSLPrice = null;
     }
 }
+
 
 // Función auxiliar VWAP Intradía (usando velas de 15m)
 function calcularVWAPIntradia(velas15m) {
