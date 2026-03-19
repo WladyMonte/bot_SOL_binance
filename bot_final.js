@@ -7,7 +7,7 @@ const http = require('http');
 // --- SERVIDOR KEEP-ALIVE ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('FastCL V5.3 Ghost Mode: Sistema Operativo');
+    res.end('FastCL V5.4 Zen Oracle: Sistema Operativo');
 }).listen(process.env.PORT || 3000);
 
 // --- CONFIGURACIÓN TÉCNICA ---
@@ -41,8 +41,8 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🚀 V5.3 Ghost Mode - 30s Scan | API Protection`);
-        await avisar("🔥 *SISTEMA EN LINEA V5.3 - Ghost Mode*\nEscaneando Top 30 mercado Futuros por Volumen (>10M)\nFiltros: VWAP, Triple EMA, OrderBook Flow, RSI(7), Stoch, ATR.\nTP: +$1.0 / SL: 1.5x ATR | Limit GTC (30s timeout)\n\n*COMANDOS DISPONIBLES:*\n📊 /status - Estado actual y balance.\n🏆 /top - Ver las 30 monedas en vigilancia.\n⚡ /toggleema - Activar/Desactivar filtro de tendencia.\n⏸️ /pause / ▶️ /resume - Pausar o reanudar el bot.\n🚨 /panic - Cerrar todo y apagar.\n🧪 /testbuy [MONEDA] [LONG/SHORT] - Operación manual dinámica.");
+        console.log(`🚀 V5.4 Zen Oracle - 30s Scan | Humanized Feedback`);
+        await avisar("🔥 *SISTEMA EN LINEA V5.4 - Zen Oracle*\nEscaneando Top 30 mercado Futuros por Volumen (>10M)\nFiltros: VWAP, Triple EMA, OrderBook Flow, RSI(7), Stoch, ATR.\nTP: +$1.0 / SL: 1.5x ATR | Limit GTC (30s timeout)\n\n*COMANDOS DISPONIBLES:*\n📊 /status - Estado actual y balance.\n🏆 /top - Ver las 30 monedas en vigilancia.\n⚡ /toggleema - Activar/Desactivar filtro de tendencia.\n⏸️ /pause / ▶️ /resume - Pausar o reanudar el bot.\n🚨 /panic - Cerrar todo y apagar.\n🧪 /testbuy [MONEDA] [LONG/SHORT] - Operación manual dinámica.");
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
@@ -70,7 +70,7 @@ async function ejecutarEntrada(data, marginCalculado) {
     if (signalType === 'LONG') {
         globalSLPrice = precioActual - (1.5 * calculatedATR);
         const msgMargin = isMarginHalved ? "\n⚠️ *Margen Reducido 50% (>20% Variación)*" : "";
-        await avisar(`[${symbol}] 🚀 *LONG DETECTADO (V5.3)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (-1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
+        await avisar(`[${symbol}] 🚀 *LONG DETECTADO (V5.4)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (-1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
         try {
             const order = await exchange.createOrder(symbol, 'limit', 'buy', formattedAmount, formattedPrice, { timeInForce: 'GTC' });
             setTimeout(() => { exchange.cancelOrder(order.id, symbol).catch(() => {}); }, 30000);
@@ -80,7 +80,7 @@ async function ejecutarEntrada(data, marginCalculado) {
     } else {
         globalSLPrice = precioActual + (1.5 * calculatedATR);
         const msgMargin = isMarginHalved ? "\n⚠️ *Margen Reducido 50% (>20% Variación)*" : "";
-        await avisar(`[${symbol}] 📉 *SHORT DETECTADO (V5.3)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (+1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
+        await avisar(`[${symbol}] 📉 *SHORT DETECTADO (V5.4)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (+1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
         try {
             const order = await exchange.createOrder(symbol, 'limit', 'sell', formattedAmount, formattedPrice, { timeInForce: 'GTC' });
             setTimeout(() => { exchange.cancelOrder(order.id, symbol).catch(() => {}); }, 30000);
@@ -256,7 +256,11 @@ async function tradingLoop() {
                 const pre1mLong = currentRSI < RSI_ENTRADA_LONG && tripleEmaLong && rsi7GiroLong && stochGiroLong && candleVerde;
                 const pre1mShort = currentRSI > RSI_ENTRADA_SHORT && tripleEmaShort && rsi7GiroShort && stochGiroShort && candleRoja;
 
-                if (!pre1mLong && !pre1mShort) continue;
+                if (!pre1mLong && !pre1mShort) {
+                    // Si el bot detectó RSI cerca pero no pasó el filtro de confirmación, loggeamos Zen Oracle (opcional)
+                    /* console.log(`[${symbol}] Candle/Stoch fail: RSI ${currentRSI.toFixed(1)}`); */
+                    continue;
+                }
 
                 // Fase 2: Confirmación Pesada usando Promise.allSettled
                 const results = await Promise.allSettled([
@@ -293,6 +297,16 @@ async function tradingLoop() {
                 let signalType = null;
                 if (precondicionLong) signalType = 'LONG';
                 else if (precondicionShort) signalType = 'SHORT';
+
+                if (!signalType && (pre1mLong || pre1mShort)) {
+                    // Zen Oracle: Feedback de rechazo automático para movimientos agotados
+                    const sideWanted = pre1mLong ? 'LONG' : 'SHORT';
+                    const closingAviso = "\nNo hay prisa, el mercado da oportunidades cada minuto. Sigo escaneando el Top 30.";
+                    
+                    if (sideWanted === 'SHORT' && currentRSI < 30) {
+                        await avisar(`[${symbol}] ❌ *Oportunidad Reprimida (Zen Oracle)*\nRechazado: El RSI 1m está en ${currentRSI.toFixed(1)}, la moneda ya está muy agotada. Hacer un Short aquí es lanzarse al vacío. Esperaré a que suba para buscar una mejor entrada. ¡Tranquilo, yo cuido tu balance!${closingAviso}`);
+                    }
+                }
 
                 if (signalType) {
                     // --- Capa de Flujo (Order Flow & DOM) ---
@@ -365,7 +379,7 @@ async function reportarEstadoBot(ctx = null) {
         const enPosicion = openPositions.length > 0;
         const activeSymbol = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : "Ninguno";
         
-        let estadoStr = "🔍 Escaneando V5.3 (Ghost Mode)";
+        let estadoStr = "🔍 Escaneando V5.4 (Zen Oracle)";
         if (isBotPaused) estadoStr = "⏸️ PAUSADO";
         const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : estadoStr;
         const emaEstatus = isEmaFilterActive ? "ON 🟢" : "OFF 🔴";
@@ -453,11 +467,32 @@ bot.command('testbuy', async (ctx) => {
             const currentOpen = currCandle[1];
             const precioActualTest = ticker.last;
 
+            // Zen Oracle: Obtener RSIs para el feedback detallado
+            const closesTest = ohlcvTest.map(v => v[4]); // Nota: ohlcvTest solo tiene 2 velas por el fetch 2 original
+            // Re-petición para RSI real si queremos datos técnicos exactos
+            const ohlcvRSI = await exchange.fetchOHLCV(targetSymbol, '1m', undefined, 30);
+            const ohlcvRSI5 = await exchange.fetchOHLCV(targetSymbol, '5m', undefined, 20);
+            const r1 = RSI.calculate({ values: ohlcvRSI.map(v=>v[4]), period: 14 });
+            const r5 = RSI.calculate({ values: ohlcvRSI5.map(v=>v[4]), period: 14 });
+            const rsi1mActual = r1[r1.length - 1];
+            const rsi5mActual = r5[r5.length - 1];
+            const colorVela = precioActualTest > currentOpen ? 'Verde' : 'Roja';
+            const dataTecnica = `\n📊 RSI 1m: ${rsi1mActual.toFixed(1)} | RSI 5m: ${rsi5mActual.toFixed(1)} | Vela: ${colorVela}`;
+            const closingAviso = "\nNo hay prisa, el mercado da oportunidades cada minuto. Sigo escaneando el Top 30.";
+
+            if (testSideStr === 'LONG' && colorVela === 'Roja') {
+                return ctx.reply(`[${targetSymbol}] ❌ *Rechazado: El precio sigue cayendo (Vela Roja).*${dataTecnica}\nNo voy a dejar que 'atrapes un cuchillo' ahora. Esperaré a que el mercado me confirme un giro con una vela verde. Sigo vigilando por ti.${closingAviso}`);
+            }
+            if (testSideStr === 'SHORT' && rsi1mActual < 30) {
+                return ctx.reply(`[${targetSymbol}] ❌ *Rechazado: La moneda ya está muy agotada.*${dataTecnica}\nEl RSI está en ${rsi1mActual.toFixed(1)}. Hacer un Short aquí es lanzarse al vacío. Esperaré a que suba para buscar una mejor entrada. ¡Tranquilo, yo cuido tu balance!${closingAviso}`);
+            }
+
+            // Fallback genéricos si no cumple las reglas de la V5.2 pero no entran en Zen Oracle específico
             if (testSideStr === 'LONG' && !(precioActualTest > currentOpen && precioActualTest > prevHigh)) {
-                return ctx.reply(`❌ *TestBuy Rechazado:*\nEstructura de Vela Verde no confirmada para LONG en ${targetSymbol}.`);
+                return ctx.reply(`[${targetSymbol}] ❌ *TestBuy Rechazado (V5.2 Fallback)*${dataTecnica}\nEstructura de Vela Verde no confirmada para LONG.${closingAviso}`);
             }
             if (testSideStr === 'SHORT' && !(precioActualTest < currentOpen && precioActualTest < prevLow)) {
-                return ctx.reply(`❌ *TestBuy Rechazado:*\nEstructura de Vela Roja no confirmada para SHORT en ${targetSymbol}.`);
+                return ctx.reply(`[${targetSymbol}] ❌ *TestBuy Rechazado (V5.2 Fallback)*${dataTecnica}\nEstructura de Vela Roja no confirmada para SHORT.${closingAviso}`);
             }
         }
 
@@ -490,7 +525,7 @@ bot.command('pause', (ctx) => {
 
 bot.command('resume', (ctx) => {
     isBotPaused = false;
-    ctx.reply(`▶️ Bot REANUDADO V5.3.`);
+    ctx.reply(`▶️ Bot REANUDADO V5.4.`);
 });
 
 bot.command('panic', async (ctx) => {
@@ -535,7 +570,7 @@ bot.command('top', async (ctx) => {
 setup();
 setTimeout(() => {
     bot.launch({ dropPendingUpdates: true }).then(() => {
-        console.log("🤖 FastCL V5.3 Ghost Mode (Telegram) Init OK.");
+        console.log("🤖 FastCL V5.4 Zen Oracle (Telegram) Init OK.");
     }).catch(err => console.error("❌ Error en Telegram Launch:", err.message));
 }, 5000);
 
