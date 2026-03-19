@@ -7,7 +7,7 @@ const http = require('http');
 // --- SERVIDOR KEEP-ALIVE ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('FastCL V5.4 Zen Oracle: Sistema Operativo');
+    res.end('FastCL V5.5 Hybrid Oracle: Sistema Operativo');
 }).listen(process.env.PORT || 3000);
 
 // --- CONFIGURACIÓN TÉCNICA ---
@@ -15,6 +15,10 @@ let isEmaFilterActive = true;
 let isBotPaused = false;
 let globalSLPrice = null;     // SL Calculado por ATR
 let positionExitReason = null; // Para control en debug
+let botMode = 'HYBRID';       // Modos: ZEN, HYBRID, TIBURON
+let lastClosedProfit = 0;     // Para lógica de re-entrada Surf
+let lastClosedSymbol = null;
+let lastClosedTime = 0;
 
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -41,8 +45,8 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🚀 V5.4 Zen Oracle - 30s Scan | Humanized Feedback`);
-        await avisar("🔥 *SISTEMA EN LINEA V5.4 - Zen Oracle*\nEscaneando Top 30 mercado Futuros por Volumen (>10M)\nFiltros: VWAP, Triple EMA, OrderBook Flow, RSI(7), Stoch, ATR.\nTP: +$1.0 / SL: 1.5x ATR | Limit GTC (30s timeout)\n\n*COMANDOS DISPONIBLES:*\n📊 /status - Estado actual y balance.\n🏆 /top - Ver las 30 monedas en vigilancia.\n⚡ /toggleema - Activar/Desactivar filtro de tendencia.\n⏸️ /pause / ▶️ /resume - Pausar o reanudar el bot.\n🚨 /panic - Cerrar todo y apagar.\n🧪 /testbuy [MONEDA] [LONG/SHORT] - Operación manual dinámica.");
+        console.log(`🚀 V5.5 Hybrid Oracle - 30s Scan | Mode: ${botMode}`);
+        await avisar(`🔥 *SISTEMA EN LINEA V5.5 - Hybrid Oracle*\nModo Actual: *${botMode}*\nEscaneando Top 30 mercado Futuros por Volumen (>10M)\nFiltros: VWAP, Triple EMA, OrderBook Flow, RSI(7), Stoch, ATR.\nTP: +$1.0 / SL: 1.5x ATR | Limit GTC (30s timeout)\n\n*NUEVOS COMANDOS:*\n🧘 /modozen - Solo entradas por RSI clásicas.\n🧬 /modohibrido - Entradas RSI + Volumen.\n🦈 /modotiburon - Prioridad absoluta a Momentum Spike (Volumen).`);
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
@@ -169,6 +173,9 @@ async function tradingLoop() {
                 try {
                     await exchange.createMarketOrder(activeSymbol, sideToClose, Math.abs(contratos), { reduceOnly: true });
                     globalSLPrice = null;
+                    lastClosedProfit = pnlUSD;
+                    lastClosedSymbol = activeSymbol;
+                    lastClosedTime = Date.now();
                     await avisar(`[${activeSymbol}] ${motivo}\nCerrado con: $${pnlUSD.toFixed(2)} USD`);
                 } catch (err) {
                     await avisar(`[${activeSymbol}] ❌ *ERROR CERRANDO POSICIÓN:*\n${err.message}`);
@@ -202,11 +209,23 @@ async function tradingLoop() {
                 const ohlcvLite = await exchange.fetchOHLCV(symbol, '1m', undefined, 20);
                 if (!ohlcvLite || ohlcvLite.length < 15) continue;
 
-                const rsiLiteValues = RSI.calculate({ values: ohlcvLite.map(v => v[4]), period: 14 });
+                const closesLite = ohlcvLite.map(v => v[4]);
+                const volumesLite = ohlcvLite.map(v => v[5]);
+                
+                // Lógica de Momentum Spike (Promedio de últimas 10 velas de volumen)
+                const last10Vol = volumesLite.slice(-11, -1); 
+                const avgVol10 = last10Vol.reduce((a,b) => a+b, 0) / (last10Vol.length || 1);
+                const currentVol = volumesLite[volumesLite.length - 1];
+                const isMomentumSpike = currentVol > (avgVol10 * 3.0);
+
+                const rsiLiteValues = RSI.calculate({ values: closesLite, period: 14 });
                 const currentRSILite = rsiLiteValues[rsiLiteValues.length - 1];
 
-                // Gate: Solo si el RSI está cerca de zonas de interés (<45 o >55)
-                if (currentRSILite > 45 && currentRSILite < 55) continue;
+                // Gate Zen Oracle: Si no hay volumen explosivo, aplicamos el filtro de RSI
+                if (!isMomentumSpike) {
+                    if (currentRSILite > 45 && currentRSILite < 55) continue;
+                    if (botMode === 'TIBURON') continue; // Tiburón solo entra por volumen o spikes
+                }
 
                 // Fase 2: Carga de Datos Completa (Solo para monedas candidatas)
                 const ohlcv = await exchange.fetchOHLCV(symbol, '1m', undefined, 250);
@@ -253,8 +272,24 @@ async function tradingLoop() {
                 const candleVerde = precioActual > currentOpen && precioActual > prevHigh;
                 const candleRoja = precioActual < currentOpen && precioActual < prevLow;
 
-                const pre1mLong = currentRSI < RSI_ENTRADA_LONG && tripleEmaLong && rsi7GiroLong && stochGiroLong && candleVerde;
-                const pre1mShort = currentRSI > RSI_ENTRADA_SHORT && tripleEmaShort && rsi7GiroShort && stochGiroShort && candleRoja;
+                // Lógica Híbrida de Entrada
+                const rsiEntryLong = currentRSI < RSI_ENTRADA_LONG && rsi7GiroLong && stochGiroLong;
+                const rsiEntryShort = currentRSI > RSI_ENTRADA_SHORT && rsi7GiroShort && stochGiroShort;
+
+                const opportunisticEntryLong = isMomentumSpike && (botMode === 'HYBRID' || botMode === 'TIBURON');
+                const opportunisticEntryShort = isMomentumSpike && (botMode === 'HYBRID' || botMode === 'TIBURON');
+
+                // Lógica Surf: Si cerramos profit hace poco y el volumen sigue, permitimos re-entrada inmediata
+                const isSurfMode = (symbol === lastClosedSymbol && lastClosedProfit > 0 && (Date.now() - lastClosedTime < 180000));
+
+                let pre1mLong = (botMode !== 'TIBURON' && rsiEntryLong && tripleEmaLong && candleVerde) || (opportunisticEntryLong && candleVerde);
+                let pre1mShort = (botMode !== 'TIBURON' && rsiEntryShort && tripleEmaShort && candleRoja) || (opportunisticEntryShort && candleRoja);
+                
+                // Forzar surf si el spike persiste
+                if (isSurfMode && isMomentumSpike) {
+                    if (candleVerde) pre1mLong = true;
+                    if (candleRoja) pre1mShort = true;
+                }
 
                 if (!pre1mLong && !pre1mShort) {
                     // Si el bot detectó RSI cerca pero no pasó el filtro de confirmación, loggeamos Zen Oracle (opcional)
@@ -309,6 +344,9 @@ async function tradingLoop() {
                 }
 
                 if (signalType) {
+                    const isMomentumEntry = isMomentumSpike && signalType === (precondicionLong ? 'LONG' : 'SHORT');
+                    const momentumFactor = (currentVol / avgVol10).toFixed(1);
+                    
                     // --- Capa de Flujo (Order Flow & DOM) ---
                     // 1. Imbalance del order book (Relajado a 1.2x)
                     const ob = await exchange.fetchOrderBook(symbol, 20);
@@ -338,6 +376,13 @@ async function tradingLoop() {
                     }
 
                     if (imbalancePass && deltaPass) {
+                         // Feedback especial Zen Oracle + Opportunistic
+                         if (isMomentumEntry) {
+                            await avisar(`[${symbol}] 🚀 *Entrando por Momentum Spike (Vol: ${momentumFactor}x). ¡Subiéndome al cohete!*`);
+                         } else if (isSurfMode) {
+                            await avisar(`[${symbol}] 🏄‍♂️ *Surfing Mode: Re-entrada detectada por persistencia de fuerza.*`);
+                         }
+
                         // Calcular ATR (Stop Loss dinámico)
                         const atrValues = ATR.calculate({ high: highs, low: lows, close: closes, period: 14 });
                         const calculatedATR = atrValues[atrValues.length - 1] || ((precioActual * 0.01));
@@ -379,12 +424,12 @@ async function reportarEstadoBot(ctx = null) {
         const enPosicion = openPositions.length > 0;
         const activeSymbol = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : "Ninguno";
         
-        let estadoStr = "🔍 Escaneando V5.4 (Zen Oracle)";
+        let estadoStr = `🔍 Escaneando V5.5 (Mode: ${botMode})`;
         if (isBotPaused) estadoStr = "⏸️ PAUSADO";
         const estadoMsg = enPosicion ? `🟢 Operación Activa en [${activeSymbol}]` : estadoStr;
         const emaEstatus = isEmaFilterActive ? "ON 🟢" : "OFF 🔴";
 
-        const msg = `📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen: $${marginCalculado.toFixed(2)} USDT\n📈 Estado: ${estadoMsg}\n⚙️ Global: ${LEVERAGE}X | Limit GTC (30s)\n🎯 TP: $${PROFIT_OBJETIVO} | SL: 1.5x ATR\n📉 Filtros (VWAP, EMA, Flow): ${emaEstatus}`;
+        const msg = `📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen: $${marginCalculado.toFixed(2)} USDT\n📈 Modo Activo: *${botMode}*\n⚙️ Estado: ${estadoMsg}\n🛡️ Filtros (VWAP, EMA, Flow): ${emaEstatus}`;
         
         if (ctx) ctx.reply(msg);
         else await avisar(`⏳ *Heartbeat 1H* ⏳\n${msg}`);
@@ -518,6 +563,21 @@ bot.command('toggleema', (ctx) => {
     ctx.reply(`⚡ Filtros de Trend Cambiados a: ${isEmaFilterActive ? 'ON 🟢' : 'OFF 🔴'}`);
 });
 
+bot.command('modozen', (ctx) => {
+    botMode = 'ZEN';
+    ctx.reply(`🧘 *Modo ZEN Activado*\nEntradas estrictas por RSI (Solo 5.4 Clásica). El bot ignorará spikes de volumen si el RSI no está en zona.`);
+});
+
+bot.command('modohibrido', (ctx) => {
+    botMode = 'HYBRID';
+    ctx.reply(`🧬 *Modo HIBRIDO Activado*\nEl bot buscará RSI y también aprovechará Momentum Spikes si la tendencia lo permite.`);
+});
+
+bot.command('modotiburon', (ctx) => {
+    botMode = 'TIBURON';
+    ctx.reply(`🦈 *Modo TIBURON Activado*\nPrioridad absoluta al Volumen y Momentum Spikes. El RSI es secundario. ¡Preparado para la caza!`);
+});
+
 bot.command('pause', (ctx) => {
     isBotPaused = true;
     ctx.reply(`⏸️ Bot PAUSADO.`);
@@ -525,7 +585,7 @@ bot.command('pause', (ctx) => {
 
 bot.command('resume', (ctx) => {
     isBotPaused = false;
-    ctx.reply(`▶️ Bot REANUDADO V5.4.`);
+    ctx.reply(`▶️ Bot REANUDADO V5.5.`);
 });
 
 bot.command('panic', async (ctx) => {
@@ -570,7 +630,7 @@ bot.command('top', async (ctx) => {
 setup();
 setTimeout(() => {
     bot.launch({ dropPendingUpdates: true }).then(() => {
-        console.log("🤖 FastCL V5.4 Zen Oracle (Telegram) Init OK.");
+        console.log("🤖 FastCL V5.5 Hybrid Oracle (Telegram) Init OK.");
     }).catch(err => console.error("❌ Error en Telegram Launch:", err.message));
 }, 5000);
 
