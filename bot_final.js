@@ -22,18 +22,20 @@ const fetchCVDVolume = async (symbol, limit = 2) => {
 // --- SERVIDOR KEEP-ALIVE ---
 http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('Jarvis V6.3 | Stark Resilience: Online');
+    res.end('Jarvis V7.0 | The Architect: Online');
 }).listen(process.env.PORT || 3000);
 
 // --- CONFIGURACIÓN TÉCNICA ---
 let isEmaFilterActive = true;
 let isBotPaused = false;
-let globalSLPrice = null;     // SL Calculado por ATR
-let botMode = 'HYBRID';       // Modos: ZEN, HYBRID, TIBURON
-let lastClosedProfit = 0;     // Para lógica de re-entrada Surf
+let globalSLPrice = null;       // SL price (para failsafe)
+let botMode = 'HYBRID';         // Modos: ZEN, HYBRID, TIBURON
+let lastClosedProfit = 0;       // Para lógica de re-entrada Surf
 let lastClosedSymbol = null;
 let lastClosedTime = 0;
-let marketSentimentRSI = 50;  // Promedio RSI del Top 30
+let marketSentimentRSI = 50;    // Promedio RSI del Top 30
+let activeTradeSymbol = null;   // Símbolo de la posición activa (V7.0)
+let lastEntryTime = 0;          // Timestamp de entrada (V7.0 failsafe)
 
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -76,53 +78,86 @@ async function avisar(msg) {
 async function setup() {
     try {
         await exchange.loadMarkets();
-        console.log(`🧠 V6.3 Stark Resilience - [30s Scan] | Mode: ${botMode}`);
-        await avisar(`🦾 *PROTOCOLO JARVIS V6.3: STARK RESILIENCE ACTIVADO*\nCojín de seguridad (30% Margin): *ACTIVO*\nProtocolo Total-Check (Closure): *ACTIVO*\nSímbolos Limpios (cleanSymbol): *BLOQUEADO*\nJarvis is now infalible, señor.`);
+        console.log(`🏛️ V7.0 The Architect - [30s Scan] | Mode: ${botMode}`);
+        await avisar(`🏛️ *PROTOCOLO JARVIS V7.0: THE ARCHITECT ACTIVADO*\nOrden Atomica (MARKET + SL + TP nativos): *ONLINE*\nMargen Conservador (30%): *ACTIVO*\nCancelacion Automatica de Ordenes Contrarias: *ONLINE*\nJarvis es indestructible ahora, señor.`);
     } catch (e) { console.error("Error Setup:", e.message); }
 }
 
+// ========================================================
+// V7.0 - ARQUITECTURA DE ORDENES ATOMICAS (THE ARCHITECT)
+// ========================================================
 async function ejecutarEntrada(data, marginCalculado) {
-    const { symbol, signalType, currentRSI, precioActual, calculatedATR, isMarginHalved } = data;
-    
-    // Survival Mode & Leverage Fix
+    const { symbol, signalType, currentRSI, precioActual, calculatedATR } = data;
+    const sym = cleanSymbol(symbol);
+
+    // 1. Configurar apalancamiento y margen
     await exchange.setLeverage(currentLeverage, symbol).catch(() => {});
     await exchange.setMarginMode('ISOLATED', symbol).catch(() => {});
 
+    // 2. Calcular cantidad
     let amount = (marginCalculado * currentLeverage) / precioActual;
-    let notionalCalculado = amount * precioActual;
-    if (notionalCalculado < 10) {
-        amount = 11 / precioActual;
-    }
-
+    if ((amount * precioActual) < 10) amount = 11 / precioActual;
     const formattedAmount = Number(exchange.amountToPrecision(symbol, amount));
-    const marketInfo = exchange.markets[symbol];
-    const pricePrecision = marketInfo.precision ? marketInfo.precision.price : 4;
-    
-    // GTC Limit Order Config con Timeout
-    // Usamos el precio actual +- 0.1% para la orden límite agresiva
-    let orderPrice = signalType === 'LONG' ? precioActual * 1.001 : precioActual * 0.999;
-    const formattedPrice = Number(exchange.priceToPrecision(symbol, orderPrice));
 
-    if (signalType === 'LONG') {
-        globalSLPrice = precioActual - (1.5 * calculatedATR);
-        const msgMargin = isMarginHalved ? "\n⚠️ *Margen Reducido 50% (>20% Variación)*" : "";
-        await avisar(`${cleanSymbol(symbol)} 🚀 *LONG DETECTADO (V6.3)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (-1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
-        try {
-            const order = await exchange.createOrder(symbol, 'limit', 'buy', formattedAmount, formattedPrice, { timeInForce: 'GTC' });
-            setTimeout(() => { exchange.cancelOrder(order.id, symbol).catch(() => {}); }, 30000);
-        } catch (err) {
-            await avisar(`${cleanSymbol(symbol)} ❌ *ERROR ABRIENDO LONG:*\n${err.message}`);
-        }
-    } else {
-        globalSLPrice = precioActual + (1.5 * calculatedATR);
-        const msgMargin = isMarginHalved ? "\n⚠️ *Margen Reducido 50% (>20% Variación)*" : "";
-        await avisar(`${cleanSymbol(symbol)} 📉 *SHORT DETECTADO (V6.3)*\nRSI: ${currentRSI.toFixed(2)}\nPrecio: ${precioActual}\nSL_ATR (+1.5x): ${globalSLPrice.toFixed(4)}${msgMargin}`);
-        try {
-            const order = await exchange.createOrder(symbol, 'limit', 'sell', formattedAmount, formattedPrice, { timeInForce: 'GTC' });
-            setTimeout(() => { exchange.cancelOrder(order.id, symbol).catch(() => {}); }, 30000);
-        } catch (err) {
-            await avisar(`${cleanSymbol(symbol)} ❌ *ERROR ABRIENDO SHORT:*\n${err.message}`);
-        }
+    // 3. Calcular precios de SL y TP
+    const rawSL = signalType === 'LONG'
+        ? precioActual - (1.5 * calculatedATR)
+        : precioActual + (1.5 * calculatedATR);
+    // TP: precio que genera $1 USD neto sobre el amount
+    const tpDelta = PROFIT_OBJETIVO / formattedAmount;
+    const rawTP = signalType === 'LONG'
+        ? precioActual + tpDelta
+        : precioActual - tpDelta;
+
+    const formattedSL = Number(exchange.priceToPrecision(symbol, rawSL));
+    const formattedTP = Number(exchange.priceToPrecision(symbol, rawTP));
+    const entrySide   = signalType === 'LONG' ? 'buy'  : 'sell';
+    const closeSide   = signalType === 'LONG' ? 'sell' : 'buy';
+
+    const emoji = signalType === 'LONG' ? '🚀 LONG' : '📉 SHORT';
+    await avisar(`${sym} ${emoji} *SEÑAL V7.0*\nRSI: ${currentRSI.toFixed(2)} | Precio: ${precioActual}\nSL: ${formattedSL} | TP: ${formattedTP}`);
+
+    try {
+        // 4. Orden de entrada a MERCADO (instantánea)
+        await exchange.createMarketOrder(symbol, entrySide, formattedAmount);
+
+        // 5. Esperar 1.5s para que Binance registre la posición
+        await new Promise(r => setTimeout(r, 1500));
+
+        // 6. Re-leer cantidad exacta del exchange (Total-Check)
+        const updatedPos = await exchange.fetchPositions();
+        const myPos = updatedPos.find(p =>
+            (p.symbol === symbol || cleanSymbol(p.symbol) === sym) &&
+            Math.abs(Number(p.contracts || p.info?.positionAmt || 0)) > 0
+        );
+        const exactAmount = myPos
+            ? Math.abs(Number(myPos.contracts || myPos.info?.positionAmt || 0))
+            : formattedAmount;
+
+        // 7. STOP LOSS nativo en Binance (STOP_MARKET + reduceOnly)
+        await exchange.createOrder(symbol, 'stop_market', closeSide, exactAmount, undefined, {
+            stopPrice: formattedSL,
+            reduceOnly: true
+        });
+
+        // 8. TAKE PROFIT nativo en Binance (TAKE_PROFIT_MARKET + reduceOnly)
+        await exchange.createOrder(symbol, 'take_profit_market', closeSide, exactAmount, undefined, {
+            stopPrice: formattedTP,
+            reduceOnly: true
+        });
+
+        // 9. Guardar estado activo
+        globalSLPrice     = formattedSL;
+        activeTradeSymbol = symbol;
+        lastEntryTime     = Date.now();
+        lastClosedSymbol  = null;
+
+        await avisar(`${sym} ✅ *POSICION ABIERTA + SL/TP EN BINANCE*\nAmt: ${exactAmount} | SL: ${formattedSL} | TP: ${formattedTP}\nLas ordenes estan visibles en tu panel de Binance, señor.`);
+
+    } catch (err) {
+        await avisar(`${sym} ❌ *ERROR ARQUITECTO:* ${err.message.substring(0, 100)}`);
+        // Intentar cancelar ordenes huerfanas
+        exchange.cancelAllOrders(symbol).catch(() => {});
     }
 }
 
@@ -159,78 +194,63 @@ async function tradingLoop() {
             const activeSymbol = pos.symbol || (pos.info && pos.info.symbol);
             const contratos = Number(pos.contracts || pos.info?.positionAmt || pos.amount || 0);
             const precioEntrada = Number(pos.entryPrice || 0);
-            const updateTime = Number(pos.timestamp || (pos.info && pos.info.updateTime) || Date.now());
-            
+            const lado = contratos > 0 ? 'LONG' : 'SHORT';
+            const sym = cleanSymbol(activeSymbol);
+            const entryTimeRef = lastEntryTime || (Number(pos.timestamp || pos.info?.updateTime || 0));
+
+            // V7.0: Las ordenes SL/TP nativas de Binance manejan la salida principal.
+            // Aqui solo vigilamos por si el exchange ya cerro la posicion,
+            // o si el failsafe de 5 minutos debe actuar.
+
             const ticker = await exchange.fetchTicker(activeSymbol);
             const precioActual = ticker.last;
-            const lado = contratos > 0 ? 'LONG' : 'SHORT';
-            
-            // Recalcular SL si se reinició el bot
-            if (!globalSLPrice) {
-                const ohlcvSL = await exchange.fetchOHLCV(activeSymbol, '1m', undefined, 100);
-                if (ohlcvSL && ohlcvSL.length > 50) {
-                    const atrV = ATR.calculate({ high: ohlcvSL.map(v=>v[2]), low: ohlcvSL.map(v=>v[3]), close: ohlcvSL.map(v=>v[4]), period: 14 });
-                    const currATR = atrV[atrV.length - 1] || (precioEntrada * 0.01);
-                    globalSLPrice = lado === 'LONG' ? precioEntrada - (1.5 * currATR) : precioEntrada + (1.5 * currATR);
-                }
-            }
-
             let pnlUSD = (precioActual - precioEntrada) * contratos;
             if (lado === 'SHORT') pnlUSD = (precioEntrada - precioActual) * Math.abs(contratos);
 
-            let motivo = null;
-            if (pnlUSD >= PROFIT_OBJETIVO) {
-                motivo = `💰 TAKE PROFIT ($${PROFIT_OBJETIVO})`;
-            } else if (globalSLPrice) {
-                if (lado === 'LONG' && precioActual <= globalSLPrice) motivo = "🛑 STOP LOSS (1.5x ATR)";
-                if (lado === 'SHORT' && precioActual >= globalSLPrice) motivo = "🛑 STOP LOSS (1.5x ATR)";
-            } else if (pnlUSD <= -10.0) { // Failsafe extremo
-                motivo = "🛑 STOP LOSS (Failsafe)";
-            }
+            // Failsafe de tiempo: 5 minutos sin que SL/TP firme = cierre manual de emergencia
+            const timeOpenMs = entryTimeRef > 0 ? Date.now() - entryTimeRef : 0;
+            if (timeOpenMs > TIME_LIMIT_MS && timeOpenMs < TIME_LIMIT_MS * 2) {
+                const motivoTime = pnlUSD > 0
+                    ? "⏱️ FAILSAFE 5m (asegurando ganancia)"
+                    : "⏱️ FAILSAFE 5m (cerrando antes de mayor perdida)";
 
-            // Capa de Ejecución y Gestión: Límite de 5 Minutos
-            const timeOpenMs = Date.now() - updateTime;
-            if (!motivo && timeOpenMs > TIME_LIMIT_MS) {
-                if (pnlUSD > -0.2 && pnlUSD < 0.2) {
-                    motivo = "⏱️ TIME LIMIT 5m (Cierre en Breakeven, pulso perdido)";
-                } else if (pnlUSD > 0.2) {
-                     motivo = "⏱️ TIME LIMIT 5m (Asegurando ganancias tras expiración)";
-                } else if (pnlUSD <= -0.2) {
-                     motivo = "⏱️ TIME LIMIT 5m (Impulso muerto, cerrando pérdida controlada)";
-                }
-            }
+                // Cancelar ordenes pendientes de SL/TP en Binance
+                await exchange.cancelAllOrders(activeSymbol).catch(() => {});
+                await new Promise(r => setTimeout(r, 800));
 
-            if (motivo) {
-                const sideToClose = lado === 'LONG' ? 'sell' : 'buy';
-                try {
-                    // Protocolo TOTAL-CHECK: Obtenemos cantidad exacta desde Binance
-                    const updatedPositions = await exchange.fetchPositions();
-                    const currentPos = updatedPositions.find(p => p.symbol === activeSymbol || p.info?.symbol === activeSymbol);
-                    const exactAmount = currentPos ? Math.abs(Number(currentPos.contracts || currentPos.info?.positionAmt || currentPos.amount || 0)) : Math.abs(contratos);
-
-                    await exchange.createMarketOrder(activeSymbol, sideToClose, exactAmount, { reduceOnly: true });
+                // Cierre de emergencia con Total-Check
+                const freshPos = await exchange.fetchPositions();
+                const fPos = freshPos.find(p => p.symbol === activeSymbol || cleanSymbol(p.symbol) === sym);
+                const failAmt = fPos ? Math.abs(Number(fPos.contracts || fPos.info?.positionAmt || 0)) : Math.abs(contratos);
+                if (failAmt > 0) {
+                    const sideToClose = lado === 'LONG' ? 'sell' : 'buy';
+                    await exchange.createMarketOrder(activeSymbol, sideToClose, failAmt, { reduceOnly: true })
+                        .catch(async (e) => {
+                            const cleaned = cleanSymbol(activeSymbol);
+                            await exchange.createMarketOrder(cleaned, sideToClose, failAmt, { reduceOnly: true }).catch(() => {});
+                        });
                     globalSLPrice = null;
+                    activeTradeSymbol = null;
+                    lastEntryTime = 0;
                     lastClosedProfit = pnlUSD;
                     lastClosedSymbol = activeSymbol;
                     lastClosedTime = Date.now();
-                    await avisar(`${cleanSymbol(activeSymbol)} ${motivo}\nCerrado con: $${pnlUSD.toFixed(2)} USD`);
-                } catch (err) {
-                    console.error("Fallo cierre 1, reintentando con cleanSymbol y Total-Check...");
-                    try {
-                        const cleaned = cleanSymbol(activeSymbol);
-                        const finalPositions = await exchange.fetchPositions();
-                        const finalPos = finalPositions.find(p => cleanSymbol(p.symbol) === cleaned);
-                        const finalAmount = finalPos ? Math.abs(Number(finalPos.contracts || finalPos.info?.positionAmt || finalPos.amount || 0)) : Math.abs(contratos);
-
-                        await exchange.createMarketOrder(cleaned, sideToClose, finalAmount, { reduceOnly: true });
-                        globalSLPrice = null;
-                        await avisar(`${cleaned} ✅ *CIERRE TOTAL-CHECK EXITOSO* tras reintento.`);
-                    } catch (retryErr) {
-                        await avisar(`${cleanSymbol(activeSymbol)} ❌ *ERROR CRÍTICO STARK:* ${retryErr.message.substring(0,50)}...`);
-                    }
+                    await avisar(`${sym} ${motivoTime}\nCerrado emergencia: $${pnlUSD.toFixed(2)} USD`);
                 }
             }
-            return; // Bloquea la búsqueda global mientras haya posición
+            return; // Posicion aun activa, SL/TP de Binance la controlan
+        }
+
+        // Si teniamos una posicion activa pero ya no existe: SL/TP de Binance la cerro
+        if (activeTradeSymbol) {
+            const sym = cleanSymbol(activeTradeSymbol);
+            await exchange.cancelAllOrders(activeTradeSymbol).catch(() => {});
+            await avisar(`${sym} \ud83c\udfc1 *POSICION CERRADA por Binance* (SL/TP nativo ejecutado)\nSistema listo para el siguiente trade, senor.`);
+            lastClosedSymbol = activeTradeSymbol;
+            lastClosedTime = Date.now();
+            activeTradeSymbol = null;
+            globalSLPrice = null;
+            lastEntryTime = 0;
         }
 
         // Survival Mode Check
@@ -465,13 +485,13 @@ async function reportarEstadoBot(ctx = null) {
         const activeSymbol = enPosicion ? (openPositions[0].symbol || openPositions[0].info?.symbol) : "Ninguno";
         
         const sentimentStr = marketSentimentRSI > 50 ? "🐂 ALCISTA" : "🐻 BAJISTA";
-        let estadoStr = `🛡️ Jarvis V6.3 Stark Resilience (Mode: ${botMode})`;
+        let estadoStr = `🏛️ Jarvis V7.0 The Architect (Mode: ${botMode})`;
         if (isBotPaused) estadoStr = "⏸️ PAUSADO";
         const cleanedActive = cleanSymbol(activeSymbol);
         const estadoMsg = enPosicion ? `🟢 Operación Activa en ${cleanedActive}` : estadoStr;
         const emaEstatus = isEmaFilterActive ? "ON 🟢" : "OFF 🔴";
 
-        const msg = `📊 Balance Total: $${totalBalance.toFixed(2)} USDT\n💸 Margen (30%): $${marginCalculado.toFixed(2)} USDT\n📈 Sentimiento: *${sentimentStr}* (RSI Avg: ${marketSentimentRSI.toFixed(1)})\n🧬 Modo Activo: *${botMode}*\n⚙️ Estado: ${estadoMsg}\n🛡️ Apalancamiento: ${currentLeverage}X | Limit GTC\n⚙️ Filtros (VWAP, EMA, Flow): ${emaEstatus}`;
+        const msg = `🏛️ Jarvis V7.0 The Architect | Balance: $${totalBalance.toFixed(2)} USDT\n💸 Margen (30%): $${marginCalculado.toFixed(2)} USDT\n📈 Sentimiento: *${sentimentStr}* (RSI Avg: ${marketSentimentRSI.toFixed(1)})\n🧬 Modo: *${botMode}*\n⚙️ Estado: ${estadoMsg}\n🛡️ Palanca: ${currentLeverage}X | Ordenes nativas SL/TP en Binance\n⚙️ Filtros (VWAP EMA Flow): ${emaEstatus}`;
         
         if (ctx) ctx.reply(msg, { parse_mode: 'Markdown' });
         else await avisar(`⏳ *Heartbeat 1H* ⏳\n${msg}`);
@@ -619,7 +639,7 @@ bot.command('pause', (ctx) => {
 
 bot.command('resume', (ctx) => {
     isBotPaused = false;
-    ctx.reply(`▶️ Protocolo Jarvis REANUDADO V6.3 Stark Resilience.`);
+    ctx.reply(`▶️ Jarvis V7.0 The Architect REANUDADO. Ordenes nativas activas.`);
 });
 
 bot.command('panic', async (ctx) => {
@@ -664,7 +684,7 @@ bot.command('top', async (ctx) => {
 setup();
 setTimeout(() => {
     bot.launch({ dropPendingUpdates: true }).then(() => {
-        console.log("🤖 FastCL V6.3 Stark Resilience (Telegram) Init OK.");
+        console.log("🤖 FastCL V7.0 The Architect (Telegram) Init OK.");
     }).catch(err => console.error("❌ Error en Telegram Launch:", err.message));
 }, 5000);
 
